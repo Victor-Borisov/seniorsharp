@@ -472,4 +472,19 @@ app.MapPost("/sessions/{id:guid}/answer", async (
 // SPA fallback: any non-API, non-file path returns index.html (client-side routing).
 app.MapFallbackToFile("index.html");
 
+// Self-initialize the database on server startup so a fresh deployment is self-contained:
+// apply any pending migrations, then seed the skill graph if the table is empty. Idempotent.
+// (CLI modes above return before this point, so it runs only when serving.)
+using (var initScope = app.Services.CreateScope())
+{
+    var sp = initScope.ServiceProvider;
+    await sp.GetRequiredService<AppDbContext>().Database.MigrateAsync();
+    if (!await sp.GetRequiredService<AppDbContext>().SkillNodes.AnyAsync())
+    {
+        var graphPath = Path.GetFullPath(app.Configuration["Content:GraphPath"] ?? "content/skill-graph.json");
+        var count = await sp.GetRequiredService<GraphSeeder>().SeedFromFileAsync(graphPath);
+        app.Logger.LogInformation("Seeded {Count} skill nodes on startup from {Path}.", count, graphPath);
+    }
+}
+
 app.Run();
