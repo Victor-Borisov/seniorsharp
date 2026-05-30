@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, setInviteCode, type Verdict } from './api'
 
 type Phase = 'start' | 'interview' | 'verdict' | 'error'
@@ -15,6 +15,22 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [verdict, setVerdict] = useState<Verdict | null>(null)
+
+  // Voice mode
+  const [speak, setSpeak] = useState(true)        // auto-read interviewer questions aloud
+  const [recording, setRecording] = useState(false)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  // Speak each new interviewer question when voice is on.
+  useEffect(() => {
+    if (!speak || !pendingQuestion) return
+    let url = ''
+    api.synthesize(pendingQuestion)
+      .then(blob => { url = URL.createObjectURL(blob); void new Audio(url).play() })
+      .catch(() => { /* TTS is best-effort */ })
+    return () => { if (url) URL.revokeObjectURL(url) }
+  }, [pendingQuestion, speak])
 
   async function start() {
     setBusy(true); setError('')
@@ -46,6 +62,30 @@ export function App() {
     } catch (e) { setError(String(e)); setPhase('error') } finally { setBusy(false) }
   }
 
+  // Press to start/stop recording; on stop, transcribe and drop the text into the answer box.
+  async function toggleRecord() {
+    if (recording) { recorderRef.current?.stop(); return }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream)
+      chunksRef.current = []
+      mr.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data) }
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        setRecording(false)
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' })
+        setBusy(true)
+        try {
+          const text = await api.transcribe(blob)
+          setAnswer(prev => (prev ? prev + ' ' : '') + text)
+        } catch (e) { setError(String(e)) } finally { setBusy(false) }
+      }
+      mr.start()
+      recorderRef.current = mr
+      setRecording(true)
+    } catch (e) { setError('Microphone access denied or unavailable: ' + String(e)) }
+  }
+
   return (
     <div className="app">
       <header><h1>SeniorSharp</h1><span className="tag">AI Senior .NET interview</span></header>
@@ -55,12 +95,16 @@ export function App() {
           <p>An AI interviewer assesses your Senior .NET level across four axes, then gives an explained verdict.</p>
           <label>Your name (optional)<input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Dev" /></label>
           <label>Invite code<input value={code} onChange={e => setCode(e.target.value)} placeholder="if required" /></label>
+          <label className="row"><input type="checkbox" checked={speak} onChange={e => setSpeak(e.target.checked)} /> Read questions aloud (voice)</label>
           <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Start interview'}</button>
         </div>
       )}
 
       {phase === 'interview' && (
         <div className="card chat">
+          <div className="bar">
+            <label className="row"><input type="checkbox" checked={speak} onChange={e => setSpeak(e.target.checked)} /> 🔊 Speak questions</label>
+          </div>
           <div className="messages">
             {messages.map((m, i) => (
               <div key={i} className={`msg ${m.role}`}>
@@ -71,16 +115,21 @@ export function App() {
             {busy && <div className="msg interviewer"><div className="who">Interviewer</div><div className="text">…</div></div>}
           </div>
           <div className="composer">
+            <button
+              className={`mic${recording ? ' rec' : ''}`}
+              onClick={toggleRecord}
+              disabled={busy && !recording}
+              title="Speak your answer"
+            >{recording ? '⏺ Stop' : '🎤 Speak'}</button>
             <textarea
               value={answer}
               onChange={e => setAnswer(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit() }}
-              placeholder="Type your answer (Ctrl+Enter to send)…"
+              placeholder="Type your answer, or press 🎤 to speak (Ctrl+Enter to send)…"
               disabled={busy}
             />
             <button onClick={submit} disabled={busy || !answer.trim()}>Send</button>
           </div>
-          <p className="hint" title={pendingQuestion}></p>
         </div>
       )}
 

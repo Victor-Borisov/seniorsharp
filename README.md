@@ -60,7 +60,7 @@ Discovery → DeepDive → SystemDesign → Scoring → Report → Done
 
 - **Backend:** ASP.NET Core (.NET 10), EF Core + PostgreSQL, the official Anthropic SDK (Claude).
 - **Frontend:** React + Vite (TypeScript), built into the API's `wwwroot` and served same-origin.
-- **Voice (I/O):** OpenAI STT/TTS (`gpt-4o-transcribe` / `gpt-4o-mini-tts`); adapter in place, browser wiring in progress.
+- **Voice (I/O):** OpenAI STT/TTS (`gpt-4o-transcribe` / `gpt-4o-mini-tts`); browser voice mode (record answers, hear questions) wired into the UI.
 - **Observability:** OpenTelemetry exported to Langfuse.
 
 ## Repository layout
@@ -137,5 +137,5 @@ compose-provided PostgreSQL and the environment variables above; TLS is handled 
 ## Status
 
 The engine is complete end to end: a full interview produces a persisted, explained, level-separating
-verdict, with a text web UI. The voice adapter is in place; browser audio wiring and the managed-provider
-hookup are in progress.
+verdict, served through a web UI with both text and browser voice (record answers, hear questions via
+OpenAI STT/TTS).

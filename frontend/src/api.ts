@@ -54,4 +54,25 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
     return res.json() as Promise<Verdict>
   },
+
+  // Voice I/O (OpenAI STT/TTS via the backend).
+  async transcribe(audio: Blob): Promise<string> {
+    const res = await fetch('/voice/stt', {
+      method: 'POST',
+      headers: { 'Content-Type': audio.type || 'audio/webm', 'X-Invite-Code': inviteCode },
+      body: audio,
+    })
+    if (!res.ok) throw new Error(`STT ${res.status} ${await res.text()}`)
+    return (await res.json()).text as string
+  },
+
+  async synthesize(text: string): Promise<Blob> {
+    const res = await fetch('/voice/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Invite-Code': inviteCode },
+      body: JSON.stringify({ text }),
+    })
+    if (!res.ok) throw new Error(`TTS ${res.status}`)
+    return res.blob()
+  },
 }

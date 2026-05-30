@@ -29,3 +29,8 @@ button:disabled { opacity:.5; cursor:default; }
 .axis-detail p { color:var(--muted); }
 .error pre { white-space:pre-wrap; color:#ff8a8a; }
 .hint { color:var(--muted); font-size:12px; }
+.row { display:flex; align-items:center; gap:8px; }
+.row input[type=checkbox] { width:auto; margin:0; }
+.bar { display:flex; justify-content:flex-end; margin-bottom:10px; font-size:13px; }
+.mic { margin-top:0; background:#2a2e38; white-space:nowrap; }
+.mic.rec { background:#b23b3b; }

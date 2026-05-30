@@ -38,6 +38,12 @@ public sealed record VoiceTurnBody(string Utterance);
 /// <summary>Response for the voice endpoints: the next thing to speak + whether the interview is over.</summary>
 public sealed record VoiceTurnResponse(Guid SessionId, string Utterance, bool IsComplete);
 
+/// <summary>Body for POST /voice/tts (text to synthesize to speech).</summary>
+public sealed record VoiceTtsBody(string Text);
+
+/// <summary>Response for POST /voice/stt (transcribed text).</summary>
+public sealed record SttResponse(string Text);
+
 /// <summary>One axis line in the report (modal level + mean score across scorer runs).</summary>
 public sealed record AxisVerdictDto(string Axis, string Level, double Score, string Rationale, string[] Citations);
 

@@ -28,6 +28,9 @@ builder.Services.AddSeniorSharpLlm(builder.Configuration);
 // Orchestration: FSM-driven orchestrator + questioner/classifier/scorer roles + prompt provider.
 builder.Services.AddSeniorSharpOrchestration(builder.Configuration);
 
+// Voice I/O (OpenAI STT/TTS) — typed HttpClient + service reading Voice:ApiKey.
+builder.Services.AddHttpClient<SpeechService>();
+
 // --- Observability: OpenTelemetry tracing -> OTLP (Langfuse) -------------
 var otlpEndpoint = builder.Configuration["Otlp:Endpoint"];
 builder.Services.AddOpenTelemetry()
@@ -451,6 +454,26 @@ app.MapPost("/voice/sessions/{id:guid}/turn", async (
         return Results.Ok(new VoiceTurnResponse(r.SessionId, r.Utterance, r.IsComplete));
     })
     .WithName("VoiceTurn");
+
+// Speech-to-text: the browser POSTs recorded audio (raw body), we return the transcript.
+app.MapPost("/voice/stt", async (HttpRequest request, SpeechService speech, CancellationToken ct) =>
+    {
+        if (!speech.IsConfigured)
+            return Results.Problem("Voice is not configured (Voice:ApiKey missing).", statusCode: 503);
+        var text = await speech.TranscribeAsync(request.Body, request.ContentType, ct);
+        return Results.Ok(new SttResponse(text));
+    })
+    .WithName("VoiceStt");
+
+// Text-to-speech: returns MP3 audio for the given text (the interviewer's utterance).
+app.MapPost("/voice/tts", async (VoiceTtsBody body, SpeechService speech, CancellationToken ct) =>
+    {
+        if (!speech.IsConfigured)
+            return Results.Problem("Voice is not configured (Voice:ApiKey missing).", statusCode: 503);
+        var audio = await speech.SynthesizeAsync(body.Text, ct);
+        return Results.File(audio, "audio/mpeg");
+    })
+    .WithName("VoiceTts");
 
 app.MapPost("/sessions/{id:guid}/answer", async (
         Guid id,
