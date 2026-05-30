@@ -1,0 +1,78 @@
+# SeniorSharp — local development stack (M0 skeleton).
+# Minimal working configuration: API + Postgres + Langfuse (LLM tracing).
+# Bring up with:  docker compose up --build
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: seniorsharp-api:dev
+    ports:
+      - "8080:8080"
+    environment:
+      # ASP.NET Core listens on 8080 (matches Dockerfile EXPOSE / non-root default).
+      ASPNETCORE_URLS: "http://+:8080"
+      ASPNETCORE_ENVIRONMENT: "Development"
+      # Connection string is read by AddDbContext via ConnectionStrings:Postgres.
+      # Double-underscore maps to the nested config key in .NET configuration.
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=seniorsharp;Username=seniorsharp;Password=seniorsharp"
+      # Anthropic key is injected from your shell/.env (never commit a real key).
+      Anthropic__ApiKey: "${ANTHROPIC_API_KEY:-}"
+      # OpenAI key (voice I/O: STT/TTS / Realtime), same pattern; used by the voice shim once wired.
+      Voice__ApiKey: "${OPENAI_API_KEY:-}"
+      # Access gate for public deploys: friends enter this code; empty disables the gate.
+      Security__InviteCode: "${INVITE_CODE:-}"
+      # Public budget caps so a shared demo can't drain API credits (short interview, small ensemble).
+      Interview__DiscoveryBudget: "1"
+      Interview__DeepDiveBudget: "2"
+      Interview__SystemDesignBudget: "1"
+      Interview__ScorerRuns: "2"
+      # OTLP export to Langfuse (TODO: confirm Langfuse OTLP ingest path/headers).
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://langfuse:3000/api/public/otel"
+      OTEL_SERVICE_NAME: "seniorsharp-api"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "seniorsharp"
+      POSTGRES_USER: "seniorsharp"
+      POSTGRES_PASSWORD: "seniorsharp"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seniorsharp -d seniorsharp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Langfuse — LLM observability (traces of prompt/tool-use runs).
+  # Minimal single-container setup pointed at its own Postgres database.
+  # NOTE: this is a dev-only configuration. For anything beyond local use,
+  # rotate the secrets below and review Langfuse's production deployment guide.
+  langfuse:
+    image: langfuse/langfuse:2
+    ports:
+      - "3000:3000"
+    environment:
+      # Langfuse stores its data in the same Postgres instance, separate DB.
+      DATABASE_URL: "postgresql://seniorsharp:seniorsharp@postgres:5432/langfuse"
+      NEXTAUTH_URL: "http://localhost:3000"
+      # Dev-only secrets — replace for any non-local environment.
+      NEXTAUTH_SECRET: "dev-nextauth-secret-change-me"
+      SALT: "dev-salt-change-me"
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

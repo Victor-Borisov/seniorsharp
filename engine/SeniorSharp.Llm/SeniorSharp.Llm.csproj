@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SeniorSharp.Contracts\SeniorSharp.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Official Anthropic .NET SDK (package `Anthropic`, v10+ is the first-party SDK). -->
+    <PackageReference Include="Anthropic" Version="10.0.1" />
+    <!-- Needed for AddSeniorSharpLlm DI registration extension. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

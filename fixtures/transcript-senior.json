@@ -1,0 +1,36 @@
+{
+  "candidateRef": "demo-senior-001",
+  "graphVersion": "v0.1-grounded",
+  "rounds": [
+    {
+      "round": "deep-dive",
+      "turns": [
+        {
+          "node": "async-state-machine",
+          "question": "What actually happens when an async method hits its first await on an already-completed Task?",
+          "answer": "The C# compiler rewrites the method into a struct state machine implementing IAsyncStateMachine. On the first await it calls GetAwaiter().IsCompleted; if the task is already complete it stays synchronous and never yields, so there's no allocation. If it's not complete, the struct is boxed onto the heap when AwaitUnsafeOnCompleted captures the continuation, and the builder schedules the continuation via the captured ExecutionContext. So the 'async tax' is one boxing of the state machine plus a Task allocation only on the actual suspension path — hot paths that complete synchronously stay allocation-free, which is why ValueTask matters for high-frequency APIs."
+        },
+        {
+          "node": "gc-generations-and-modes",
+          "question": "You see rising p99 latency under load with frequent Gen2 collections. How do you reason about it?",
+          "answer": "Frequent Gen2 usually means either mid-lifetime objects being promoted (a generational hypothesis violation) or LOH pressure. First I'd confirm with dotnet-counters whether it's Gen0 churn promoting, or LOH growth, and whether we're in Workstation vs Server GC — under load you want Server GC with concurrent enabled. p99 spikes correlate with blocking gen2s, so I'd look at allocation rate per request: pooling large buffers (ArrayPool), avoiding LOH allocations over 85KB, and checking for accidental retention via static caches or event handler leaks. I would not switch GC modes before measuring — the budget is allocations/sec and Gen0 collection frequency, and I'd tie any change back to the p99 number."
+        }
+      ]
+    },
+    {
+      "round": "system-design",
+      "turns": [
+        {
+          "node": "idempotency-deduplication",
+          "question": "Design the payment-charge endpoint so a client retry never double-charges.",
+          "answer": "I'd make the operation idempotent with a client-supplied idempotency key persisted in the same transaction as the charge, with a unique constraint. On retry the insert conflicts and we return the stored result rather than charging again. For the side effect to the payment provider I'd use an outbox: write intent + key in the local transaction, then a relay publishes to the provider exactly-once-ish with the key, and the provider's own idempotency key dedupes downstream. The boundary decision is that the DB transaction is the source of truth and the external call is replayable — that's a one-way door if we pick the wrong key scope, so the key must be per-business-operation, not per-HTTP-request."
+        },
+        {
+          "node": "resilience-polly",
+          "question": "How do you keep that endpoint healthy when the payment provider degrades?",
+          "answer": "Timeout first so a slow dependency can't exhaust the thread pool, then retry with jitter only for transient/idempotent calls, a circuit breaker to stop hammering a down provider, and a bulkhead to isolate provider calls from the rest of the app. I'd surface it through health checks and emit a metric for breaker state and provider latency with bounded cardinality. The postmortem action for an incident here is systemic — change the default timeout or add a perf gate — not 'be more careful'."
+        }
+      ]
+    }
+  ]
+}

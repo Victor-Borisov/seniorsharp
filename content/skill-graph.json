@@ -1,0 +1,2390 @@
+{
+  "version": "v0.1-grounded",
+  "date": "2026-05-29",
+  "nodes": [
+    {
+      "id": "async-state-machine",
+      "title": "async/await State Machine & Continuation Internals",
+      "layer": "C# language",
+      "description": "Во что компилятор разворачивает async-метод (IAsyncStateMachine, AsyncTaskMethodBuilder, MoveNext), где происходят аллокации, захват контекста продолжения, и как это влияет на perf и диагностику стеков.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior описывает генерацию IAsyncStateMachine (struct в Release, class в Debug), роль AwaitUnsafeOnCompleted и AsyncTaskMethodBuilder; что синхронно-завершённый путь не аллоцирует (cached completed task, struct-builder на стеке/в регистрах), а при ПЕРВОМ реальном yield state machine боксится в кучу вместе с builder; что в точке await захватывается SynchronizationContext (или TaskScheduler.Current если SyncContext==null). Знает про async void (исключения летят в SyncContext, нельзя await), async-метод без await (синхронно + варнинг), рваные async-стектрейсы и как видеть <MoveNext> boxed-объекты в дампе. Middle воспринимает await как магию.",
+      "mastery_focus": [
+        "depth"
+      ],
+      "example_probe": "Во что разворачивается простой async-метод с одним await над уже завершённым Task? Когда аллокация в куче, а когда метод отработает без единой аллокации? Почему в дампе вы видите <MoveNext> boxed-объекты и где именно боксится state machine?"
+    },
+    {
+      "id": "configureawait-synccontext",
+      "title": "ConfigureAwait, SynchronizationContext & Sync-over-async Deadlocks",
+      "layer": "C# language",
+      "description": "Механика захвата SynchronizationContext/TaskScheduler точкой await, роль ConfigureAwait(false), и дедлоки при блокирующем ожидании (.Result/.Wait()) в single-threaded контексте.",
+      "prerequisites": [
+        "async-state-machine"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает: захватывается current SynchronizationContext ИЛИ (если null) current TaskScheduler; ConfigureAwait(false) влияет на конкретный await, а не на весь метод; бесполезен в ASP.NET Core (нет SyncContext) но критичен в библиотеках/WPF/WinForms (CA2007), знает ConfigureAwaitOptions.SuppressThrowing/ForceYielding (.NET 8). Воспроизводит точный механизм sync-over-async deadlock: поток держит контекст, continuation постится в тот же занятый контекст; объясняет почему в ASP.NET Core тот же код не виснет но крадёт thread-pool поток → starvation, и почему Task.Run-обёртка — пластырь, а правильное решение async всю дорогу.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Код с await вызывается через .Result в WPF и виснет, а в ASP.NET Core и юнит-тесте проходит. Объясните физически что захватывается на continuation и куда постится. Какие три способа починить и почему два из них пластырь?"
+    },
+    {
+      "id": "valuetask-semantics",
+      "title": "ValueTask & IValueTaskSource Semantics",
+      "layer": "C# language",
+      "description": "Когда ValueTask даёт выигрыш, инварианты потребления (один await, нельзя кэшировать/await дважды/блокировать), пулинг через IValueTaskSource и PoolingAsyncValueTaskMethodBuilder.",
+      "prerequisites": [
+        "async-state-machine"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает правила: ValueTask потребляется ровно один раз — нельзя await дважды/одновременно, нельзя .GetAwaiter().GetResult() до завершения, нельзя хранить в поле без .AsTask()/.Preserve(), нельзя в WhenAll без .AsTask(). Выигрыш только на горячем пути с частым СИНХРОННЫМ завершением (буферизованный Stream.ReadAsync, Channel), при гарантированно async-пути ValueTask дороже. Расскажет про IValueTaskSource + ManualResetValueTaskSourceCore с token-версионированием (ловит повторное использование) в Socket/Channels, про [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]. Middle думает 'ValueTask всегда быстрее'.",
+      "mastery_focus": [
+        "depth"
+      ],
+      "example_probe": "Метод кэш-чтения попадает в память синхронно в 95% случаев — переход Task→ValueTask. В каких трёх сценариях ValueTask молча вернёт мусор или кинет? Как IValueTaskSource через токен ловит повторное потребление после переиспользования backing-объекта?"
+    },
+    {
+      "id": "generic-variance",
+      "title": "Generic Covariance & Contravariance",
+      "layer": "C# language",
+      "description": "in/out параметры типов, почему variance только для интерфейсов/делегатов и reference types, связь с type safety на уровне CLR и array covariance как историческая дыра.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объяснит out=ковариантность (только выходные позиции), in=контравариантность (только входные), почему IList<T> не вариантен (T и читается и пишется). Свяжет с array covariance (string[] как object[] кидает ArrayTypeMismatchException при записи), почему variance только для reference types (для value-type нет общего представления — разный layout, нужен боксинг), что компилятор проверяет позиции а CLR enforce-ит. Свяжет с дизайном API: IEnumerable<out T>, Func<in,out>, IComparer<in T>. Middle путает с наследованием generic-аргументов.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Почему IEnumerable<string> присваивается IEnumerable<object>, а List<string> в List<object> — нет? Почему нельзя сделать вариантным IEnumerable<int>→IEnumerable<object>, и где в самом .NET ковариантность массивов выстреливает рантайм-исключением?"
+    },
+    {
+      "id": "linq-deferred-execution",
+      "title": "LINQ Deferred Execution & Multiple Enumeration",
+      "layer": "C# language",
+      "description": "Отложенное выполнение, повторная материализация источника, streaming vs buffering операторы, захват переменных в замыканиях запроса, perf- и корректностные ловушки.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior говорит, что запрос — рецепт, а не данные; повторный foreach перечисляет источник заново (двойной запрос к БД, двойное чтение Stream, недетерминизм при Random/DateTime.Now). Различает streaming (Where/Select/Take — лениво) и buffering (OrderBy/GroupBy/Reverse — материализуют весь источник до первого элемента). Знает про захват переменной замыканием, когда .ToList() нужен для КОРРЕКТНОСТИ (снимок мутабельного источника), а не perf, и риск скрытого материализации IQueryable. Middle добавляет ToList() наугад.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "IEnumerable<T> из сети, вызывающий делает .Count() потом foreach. Что не так и как проявится в проде? Какие операторы заставят источник перечислиться полностью до выдачи первого элемента и почему это меняет память/латентность?"
+    },
+    {
+      "id": "expression-trees",
+      "title": "Expression Trees & IQueryable Translation",
+      "layer": "C# language",
+      "description": "Как лямбда становится Expression<Func<...>>, как провайдеры (EF Core) транслируют дерево в SQL, ручное построение деревьев и стоимость Expression.Compile.",
+      "prerequisites": [
+        "linq-deferred-execution"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior различает Func<T> (скомпилированный делегат, в памяти) и Expression<Func<T>> (AST для провайдера). Объяснит почему C#-метод внутри Where у IQueryable в EF Core 8 кидает InvalidOperationException, как EF строит SQL обходом дерева, что Expression.Compile() дорог и кэшируется (делегат, не компиляция в цикле). Может построить дерево руками (ParameterExpression, Expression.Lambda/Call) для динамических фильтров. Знает про утечку логики на клиента при IEnumerable вместо IQueryable. Middle не отличает где код выполняется.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Почему predicate как Func<T,bool> тащит всю таблицу в память, а Expression<Func<T,bool>> транслируется в WHERE? Как динамически собрать дерево для 'любое строковое поле содержит подстроку', не зная полей на этапе компиляции?"
+    },
+    {
+      "id": "ref-struct-constraints",
+      "title": "ref struct Lifetime, ref fields & Escape Analysis",
+      "layer": "C# language",
+      "description": "Семантика ref struct: запрет heap-аллокации/boxing/async/iterator/лямбд, ref fields и scoped в .NET 7+, allows ref struct в C# 13, связь с компактизацией GC.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth"
+      ],
+      "senior_signal": "Senior перечислит ограничения ref struct через одну инвариант: значение никогда не должно попасть в кучу (нельзя поле class, box, массив, generic-аргумент до C# 13, захват замыканием/async/iterator) — потому что GC двигает объекты при компактизации, а managed-указатель внутри должен оставаться валидным только на стеке. Объяснит ref fields и safe-to-escape/ref-safe-to-escape анализ (.NET 7+), роль scoped и [UnscopedRef], allows ref struct constraint (C# 13). Middle не знает ref struct помимо Span.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Перечислите где ref struct нельзя и какую гарантию рантайма защищает каждое ограничение. Метод возвращает Span из stackalloc — почему компилятор запретит и как ref-escape анализ это вычисляет?"
+    },
+    {
+      "id": "span-memory-stackalloc",
+      "title": "Span<T>, Memory<T> & Allocation-Free Slicing",
+      "layer": "C# language",
+      "description": "Span/ReadOnlySpan для нарезки без аллокаций, почему Span нельзя в async (нужен Memory<T>), stackalloc и его границы, MemoryMarshal/Unsafe, span-overloads в System.Text.Json.",
+      "prerequisites": [
+        "ref-struct-constraints"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает, что Span<T> живёт только на стеке (см. ref struct), для async нужен Memory<T> с .Span внутри синхронного куска, объясняет unification stack/heap/unmanaged под одним Span (ref+length), опасность stackalloc в цикле (стек не освобождается до конца метода → StackOverflow) и порог ~1KB, slicing без копирования для парсинга, string.Create, ArrayPool в связке с Memory, Utf8Parser. Middle использует Substring и не знает ограничений ref struct.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Почему Span<T> нельзя в async-методе, а Memory<T> можно? Что произойдёт со stackalloc внутри цикла на 100k итераций и как переписать парсер CSV на Span без промежуточных подстрок?"
+    },
+    {
+      "id": "records-equality-immutability",
+      "title": "Records, Value Equality & with-Expressions",
+      "layer": "C# language",
+      "description": "Сгенерированная структурная эквивалентность, copy-семантика with (shallow), record class vs record struct, EqualityContract и ловушки мутабельных полей в ключах.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает что record class генерирует Equals/GetHashCode/EqualityContract/PrintMembers/Deconstruct + protected copy-конструктор, что with — shallow (вложенная коллекция шарится). EqualityContract включает рантайм-тип (наследник != базовый при равных полях). Различает record struct (мутабельный по умолчанию, value equality без EqualityContract) и readonly record struct. Объяснит опасность мутабельной коллекции в record как ключе HashSet (hashcode изменится → элемент потеряется), что record неуместен для entity с identity. Middle думает record='класс покороче'.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Два record с одинаковыми полями, но один наследник другого — равны? Что будет, если положить record с List-полем в HashSet и мутировать список, и почему with-копия не спасает от шаринга вложенной ссылки?"
+    },
+    {
+      "id": "nullable-reference-types",
+      "title": "Nullable Reference Types & Flow Analysis",
+      "layer": "C# language",
+      "description": "Compile-time null-аннотации, flow analysis, атрибуты контрактов ([NotNullWhen], [MaybeNull], [MemberNotNull]), и что NRT стираются в рантайме.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Communication"
+      ],
+      "senior_signal": "Senior подчёркивает что NRT — статическая аннотация, стираемая в рантайме (JSON-десериализация, рефлексия, EF-материализация положат null в non-nullable), поэтому ! — техдолг. Знает flow-атрибуты: [NotNullWhen(true)] для TryParse, [MaybeNullWhen], [NotNullIfNotNull], [DoesNotReturn] для guard, [MemberNotNull] для Init-методов. Объяснит generic T? без констрейнта, oblivious context при миграции, что Nullable<T> — иной рантайм-механизм. Middle лепит ! чтобы заткнуть варнинг.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Компилятор не верит вашему bool TryGet(out string? result) — какой атрибут и почему убирает варнинг у вызывающего? Дают ли NRT гарантию против NRE при десериализации внешнего JSON, чем лечить на границе?"
+    },
+    {
+      "id": "iterators-async-streams",
+      "title": "Iterators (yield) & IAsyncEnumerable Streaming",
+      "layer": "C# language",
+      "description": "Разворачивание yield в state machine, ленивость до первого MoveNext, finally/using при досрочном Dispose, IAsyncEnumerable, [EnumeratorCancellation], стриминг и взаимодействие с EF Core.",
+      "prerequisites": [
+        "linq-deferred-execution",
+        "cancellation-tokens"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior объяснит, что yield генерирует IEnumerator-машину, тело НЕ выполняется до первого MoveNext (валидацию аргументов выносят в нелениво вызываемую обёртку), finally/using выполняются только при доведении до конца ИЛИ корректном Dispose (foreach диспоузит, ручной MoveNext — нет). Знает [EnumeratorCancellation] и WithCancellation, .ConfigureAwait(false) на await foreach, что IAsyncEnumalble ленив (не буферизует), комбо с Channels для fan-out, и подводный камень EF Core (открытый reader/соединение на время итерации, падение на параллельном запросе по тому же DbContext). Middle думает yield='удобный способ вернуть список'.",
+      "mastery_focus": [
+        "depth"
+      ],
+      "example_probe": "Iterator открывает файл через using и валидирует аргумент. Когда выполнится проверка и закроется ли файл при break/.First()? Почему отмена не доходит до тела async-iterator, какой атрибут чинит, и почему стриминг из EF Core держит соединение?"
+    },
+    {
+      "id": "delegates-events-closures",
+      "title": "Delegates, Events & Closure Capture",
+      "layer": "C# language",
+      "description": "Multicast-делегаты, событие vs публичный делегат, утечки памяти через подписки, захват переменных замыканиями (по ссылке) и аллокации closure на горячем пути.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает про утечку: издатель удерживает подписчика через event-делегат до отписки (классика leak у долгоживущих сервисов), про multicast (исключение в одном обработчике прерывает остаток invocation list). Объяснит замыкание как скрытый display class, захват по ссылке (баг с общей переменной в for до C# 5; foreach стал per-iteration с C# 5), аллокацию delegate+closure на горячем пути и static lambda (C# 9). Различает event vs public Action-поле, weak event pattern, диагностику leak через GC roots. Middle путает захват по значению/ссылке.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Почему подписка на событие синглтона из транзиентного объекта — утечка, и как найти её в дампе через цепочку GC-корней? Что захватывает лямбда в for(int i...) против foreach(var x...) и как это менялось между версиями C#?"
+    },
+    {
+      "id": "pattern-matching-switch",
+      "title": "Pattern Matching, switch Expressions & Exhaustiveness",
+      "layer": "C# language",
+      "description": "Современный pattern matching (type/property/relational/list patterns), switch-выражения, порядок arm-ов, проверка полноты и связь с дизайном sealed-иерархий.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Communication"
+      ],
+      "senior_signal": "Senior использует property/positional/relational/logical/list patterns как замену if-else и visitor, понимает порядок проверки arm (сверху вниз, важен для перекрытий) и недостижимые arm. Знает про exhaustiveness: switch-выражение без полного покрытия даёт варнинг и кидает SwitchExpressionException (нет настоящей sum-type гарантии как в F#/Rust), отсюда дисциплина _ => throw для closed-иерархий. Свяжет с дизайном: sealed-иерархии + pattern matching против полиморфизма (trade-off). Middle пишет switch только по enum/типу.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Перепишите вложенный if по двум полям в switch с property и relational patterns. Даёт ли C# гарантию что вы обработали все подтипы sealed-иерархии, и что произойдёт в рантайме если добавить подтип и забыть arm?"
+    },
+    {
+      "id": "gc-generations-and-modes",
+      "title": "GC Generations, Modes, Regions & DATAS",
+      "layer": ".NET runtime / CLR",
+      "description": "Поколенческий GC, generational hypothesis, write barriers/card tables, Workstation/Server/Background GC, Regions (.NET 7+), DATAS (.NET 8), влияние cgroup-лимитов в контейнерах.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объясняет generational hypothesis и почему gen0 дёшев, описывает write barrier+card table для gen2→gen0 ссылок и их стоимость на каждой записи в ref-поле, различает Background GC (concurrent mark gen2) от устаревшего Concurrent GC, понимает Server GC = heap+поток на ядро (throughput ценой RSS и tail latency), Regions вместо segments (.NET 7+), DATAS (.NET 8, динамическая адаптация числа heap'ов). Критично: влияние cgroup CPU/memory limits и GCHeapHardLimit. Middle: 'есть три поколения, gen2 редкий'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Сервис в контейнере 2 vCPU после Server GC дал рост RSS и худший p99. Объясните через число heap'ов, write barrier и долгоживущие объекты. Как DATAS в .NET 8 меняет картину и что вы настроите вместо отката на Workstation?"
+    },
+    {
+      "id": "large-object-heap",
+      "title": "Large Object Heap (LOH) & Fragmentation",
+      "layer": ".NET runtime / CLR",
+      "description": "LOH как часть gen2 для объектов >=85000 байт, sweep без compact, фрагментация как причина OOM при свободной памяти, митигации через пуллинг и chunking.",
+      "prerequisites": [
+        "gc-generations-and-modes"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает порог 85000 байт, что LOH собирается (sweep, не compact) только при gen2 GC, что фрагментация LOH — классическая причина OOM при свободной памяти, предлагает митигации: ArrayPool<T>/MemoryPool, RecyclableMemoryStream, разбиение на чанки <85K, преаллокация capacity; LargeObjectHeapCompactionMode понимает как дорогой escape hatch. Знает что LOH-объекты сразу в gen2. Middle: 'большие массивы просто медленнее'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Сервис парсит 200КБ JSON тысячами в секунду и через сутки падает с OOM при 40% свободной памяти. Где LOH, почему gen2 GC не отдаёт память ОС, и как переписать аллокации (Utf8JsonReader/ArrayPool/Pipelines) чтобы не попадать в LOH?"
+    },
+    {
+      "id": "value-vs-reference-and-boxing",
+      "title": "Value Types, Hidden Boxing & Defensive Copies",
+      "layer": ".NET runtime / CLR",
+      "description": "Copy-by-value семантика, стек vs куча как упрощение, скрытый boxing/unboxing, дефолтный ValueType.Equals/GetHashCode, скрытые defensive copies при доступе к non-readonly членам через readonly/in, mutable struct как anti-pattern.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior находит скрытый boxing: struct через интерфейс, struct в коллекции object, enum в string.Format/params object[], дефолтный ValueType.Equals/GetHashCode (reflection-based, аллоцирующий). Объяснит что обращение к методу/свойству non-readonly struct через readonly-поле/in-параметр создаёт скрытую defensive copy (тихая perf-деградация на горячем пути, лечится readonly struct/readonly членами). Знает как readonly struct, in, where T:struct, IEquatable<T> это устраняют, что 'на стеке' — упрощение (escape, поля класса, замыкания, async — в куче). Middle: 'struct на стеке, class в куче' и стоп.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "В горячем цикле struct-ключ кладётся в Dictionary без override Equals/GetHashCode — три места boxing/медленного default-сравнения, как видно в профайлере? Отдельно: readonly-поле большой non-readonly struct, читаете свойство в цикле — почему профайлер показывает копирование и как убрать?"
+    },
+    {
+      "id": "gc-roots-pinning-handles",
+      "title": "GC Roots, Pinning, GCHandle & Pinned Object Heap",
+      "layer": ".NET runtime / CLR",
+      "description": "Корни GC (стек, статика, регистры, GCHandle, finalization queue), pinned-объекты, fixed, Pinned Object Heap (.NET 5+), фрагментация gen0/LOH в interop, анализ удержания в дампе.",
+      "prerequisites": [
+        "gc-generations-and-modes"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior перечисляет виды корней и понимает как дамп находит что удерживает объект. Знает что pinned-объект GC не двигает → длительный pinning (буфер socket recv) фрагментирует эфемерные сегменты/gen0, про Pinned Object Heap (.NET 5+) как митигацию и GCHandleType (Weak/WeakTrackResurrection/Normal/Pinned). Различает GC.KeepAlive vs SuppressFinalize. Middle про pinning не думает.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "TCP-сервис пиннит буферы на время recv, страдает от роста gen0 GC и фрагментации несмотря на ArrayPool. Как пиннинг мешает компактизации, чем поможет POH, и как из дампа понять что объект удерживается strong GCHandle, а не стеком?"
+    },
+    {
+      "id": "jit-tiered-compilation",
+      "title": "JIT, Tiered Compilation, OSR & Dynamic PGO",
+      "layer": ".NET runtime / CLR",
+      "description": "Многоуровневый JIT (Tier0/Tier1), on-stack replacement, инлайнинг, devirtualization, Dynamic PGO (.NET 8 by default), ReadyToRun, и влияние на warmup и latency.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior объясняет: Tier0 быстрый кодоген без оптимизаций, Tier1 рекомпилирует горячие методы по счётчику, OSR заменяет код долгого цикла прямо в кадре стека, Dynamic PGO (.NET 8) собирает профиль типов в Tier0 и спекулятивно devirtualizes/инлайнит с guard'ом, ReadyToRun даёт AOT-старт ценой худшего кода (дотягивается Tier1). Связывает с warmup, BenchmarkDotNet, latency-спайками при рекомпиляции после деплоя. Middle: 'JIT компилит один раз'.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Бенчмарк 'разгоняется' к 10000-й итерации, а в проде первые запросы после деплоя медленные. Какие фазы (Tier0→Tier1, OSR, PGO) объясняют обе картины, и почему R2R меняет 'медленный старт' но не убирает рекомпиляцию?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": ".NET"
+        }
+      ]
+    },
+    {
+      "id": "aot-and-trimming",
+      "title": "Native AOT, Trimming & Reflection Constraints",
+      "layer": ".NET runtime / CLR",
+      "description": "Native AOT, IL trimming, ограничения на reflection/Reflection.Emit/runtime-generics, source generators как замена, аннотации trim/AOT-safety и trade-off cold-start/RSS против совместимости.",
+      "prerequisites": [
+        "jit-tiered-compilation",
+        "reflection-and-codegen"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior понимает что AOT убирает JIT и Reflection.Emit/Expression.Compile, ломает reflection по строкам и runtime-инстанцирование generic'ов → нужны source-generated JSON (JsonSerializerContext), regex, logging, DI; знает trim-warnings, [DynamicallyAccessedMembers], [RequiresUnreferencedCode], [DynamicDependency] и почему library-автор обязан их проставлять. Взвешивает cold-start/RSS/размер бинаря против совместимости экосистемы и потери Dynamic PGO. Middle считает AOT 'галочкой для скорости'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "После Native AOT minimal API падает на десериализации DTO и резолве плагина через Type.GetType. Объясните корневую причину каждого (trimming убрал члены / нет рантайм-метаданных) и какие senior-решения не сводятся к 'выключить trimming'?"
+    },
+    {
+      "id": "reflection-and-codegen",
+      "title": "Reflection, Expression.Compile & Source Generators",
+      "layer": ".NET runtime / CLR",
+      "description": "Стоимость reflection, кэширование MemberInfo, компиляция делегатов через Expression.Compile/DynamicMethod, source generators как compile-time AOT-safe альтернатива, утечки через collectible-сборки.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает что reflection-вызов на порядки дороже прямого и аллоцирует (boxing аргументов в object[]), что MemberInfo/MethodInfo надо кэшировать, а горячий путь компилировать один раз в Func/Action через Expression.Compile/DynamicMethod, либо заменить source generator'ом (compile-time, zero-cost, AOT-safe). Понимает что Expression.Compile сам дорог (JIT в рантайме) — кэшировать делегат, не компилировать в цикле. Знает утечки от незакрытого dynamic-кода. Middle вызывает GetProperty().GetValue в цикле.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Маппер DTO через reflection держит CPU на 60%. Что именно кэшировать (MemberInfo vs делегат), почему наивный Expression.Compile в цикле ухудшит, и почему ни один подход не заведётся под Native AOT — а source generator заведётся?"
+    },
+    {
+      "id": "assembly-loading-and-contexts",
+      "title": "Assemblies, AssemblyLoadContext & Plugin Isolation",
+      "layer": ".NET runtime / CLR",
+      "description": "Загрузка сборок, ALC (default/collectible), разрешение зависимостей через Resolving, выгрузка плагинов, type-identity конфликты ('cannot cast TypeA to TypeA') и утечки, блокирующие unload.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior объясняет модель ALC (заменила AppDomain — нет домен-изоляции/remoting), collectible ALC для выгружаемых плагинов, почему любая удерживаемая ссылка (event handler на long-lived, static, незавершённый Task, кэш) блокирует unload (только когда нет живых ссылок + полный GC), как Resolving и default context разрешают зависимости и откуда 'cannot cast TypeA to TypeA' — одна сборка в двух контекстах = два разных Type. Middle: 'Assembly.Load просто грузит dll'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Плагины в collectible ALC, но после Unload память не освобождается, а второй плагин ловит 'cannot cast TypeA to TypeA'. Диагностируйте обе (что держит ссылку; где тип утёк в default context) и как правильно шарить общие интерфейсы между host и плагином?"
+    },
+    {
+      "id": "finalizers-disposable",
+      "title": "Finalization, IDisposable, SafeHandle & IAsyncDisposable",
+      "layer": ".NET runtime / CLR",
+      "description": "Finalization queue, недетерминированность, Dispose-паттерн, SafeHandle/CriticalFinalizerObject, IAsyncDisposable, resurrection, нагрузка single finalizer thread под высоким темпом аллокаций.",
+      "prerequisites": [
+        "gc-generations-and-modes"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает что finalizer продлевает жизнь на лишний GC-цикл (промоушн, finalizer thread исполняет ~Finalize, освобождение на следующем GC), что один finalizer thread = bottleneck под темпом, что SafeHandle/CriticalFinalizerObject надёжнее ручного финализатора (гарантия исполнения, защита от handle-recycling), когда нужен GC.SuppressFinalize, зачем IAsyncDisposable. Видит resurrection. Middle пишет ~Finalizer 'на всякий' и считает Dispose деструктором.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "В дампе растущая finalization queue и тысячи объектов в gen2 с открытыми хэндлами. Как финализатор задерживает освобождение и почему single finalizer thread стал bottleneck? Почему SafeHandle убирает оба эффекта, и где IAsyncDisposable, а не Dispose?"
+    },
+    {
+      "id": "collections-internals",
+      "title": "Collections Internals & Allocation Behavior",
+      "layer": ".NET runtime / CLR",
+      "description": "Устройство Dictionary/List/HashSet, рост и реаллокация backing-массивов, роль GetHashCode/коллизий, преаллокация capacity, Frozen/Immutable и concurrent-коллекции.",
+      "prerequisites": [
+        "value-vs-reference-and-boxing"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior описывает bucket+entries устройство Dictionary, рехеширование при росте (до простого числа, полная переаллокация), важность GetHashCode (плохой/коллизирующий → цепочки → O(n)), опасность мутабельного ключа, преаллокацию capacity и EnsureCapacity, tradeoff ConcurrentDictionary (lock striping + lock-free чтение) vs словарь под одной блокировкой. Знает FrozenDictionary/FrozenSet (.NET 8) для read-heavy и ImmutableDictionary (структурный шеринг, дороже). Middle знает только 'O(1) амортизированно'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Dictionary на миллион записей даёт всплески latency и большую LOH-аллокацию при росте. Что внутри при рехешировании, как плохой GetHashCode превращает lookup в O(n), и когда возьмёте FrozenDictionary вместо ConcurrentDictionary?"
+    },
+    {
+      "id": "memory-model-barriers",
+      "title": "CLR Memory Model, volatile & Interlocked",
+      "layer": ".NET runtime / CLR",
+      "description": "Модель памяти .NET, reordering чтений/записей, acquire/release semantics volatile, Volatile.Read/Write, memory barriers, Interlocked, atomicity, отличие x86 TSO от ARM, torn reads.",
+      "prerequisites": [
+        "value-vs-reference-and-boxing"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает атомарность и видимость, понимает что без синхронизации запись может быть не видна/видна в другом порядке (reorder JIT/CPU), что volatile даёт acquire/release (не атомарность 64-бит на 32-бит), различает Volatile.Read/Write от volatile-поля, что Interlocked атомарны + full barrier, что .NET-модель сильнее ECMA (x86 строгий TSO, ARM слабее — баг стреляет на ARM/Apple Silicon). Реализует lock-free (double-check, CAS-loop через CompareExchange), знает ABA-проблему, torn reads, false sharing/cache lines. Middle думает 'volatile = потокобезопасно'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Флаг bool _stop читается в цикле другим потоком и иногда не виден только на ARM. Объясните через reordering и модель памяти, чем поможет volatile vs Interlocked, и где здесь torn read для long на 32-бит?"
+    },
+    {
+      "id": "exception-handling-internals",
+      "title": "Exception Handling Internals, Filters & Cost",
+      "layer": ".NET runtime / CLR",
+      "description": "Двухпроходная модель (first pass поиск handler/filter, second pass раскрутка), стоимость throw, exception filters (when), throw vs throw ex, ExceptionDispatchInfo, first-chance vs unhandled, exceptions-as-control-flow.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает что throw дорог (захват stack trace, two-pass: первый проход ищет catch/выполняет filter БЕЗ раскрутки — видно в дампе оригинальные фреймы, можно логировать без перехвата; второй раскручивает с finally), что throw; сохраняет стек а throw ex; затирает, что ExceptionDispatchInfo.Capture/Throw переносит оригинальный стек через await/потоки, почему .Wait()/.Result оборачивает в AggregateException а await разворачивает первое. Знает про OperationCanceledException, что нельзя глотать критичные, и почему exceptions в горячем пути убивают throughput (паттерн Try*). Middle пишет catch(Exception ex){throw ex;}.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Парсер бросает и ловит на каждой невалидной строке и тормозит. Почему throw, а не catch дорогой, что делают two-pass и захват стека, и как переписать (TryParse/Result)? Чем throw; отличается от throw ex; в дампе и где filter when(Log(e))?"
+    },
+    {
+      "id": "middleware-pipeline-ordering",
+      "title": "Middleware Pipeline & Ordering Semantics",
+      "layer": "ASP.NET Core",
+      "description": "Конвейер как вложенные замыкания над RequestDelegate, порядок регистрации, Use/Run/Map/UseWhen, short-circuiting, обработка на обратном пути и HasStarted.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior объяснит что pipeline — вложенные замыкания над RequestDelegate, построенные в обратном порядке при старте; почему UseRouting→UseAuthentication→UseAuthorization→UseEndpoints в этом порядке (authz после routing чтобы видеть endpoint metadata, но до execution), почему UseExceptionHandler/UseForwardedHeaders в начале. Знает что код после await next() — обратный путь, что писать в response после next() поздно если HasStarted, про OnStarting/OnCompleted. Middle перечисляет 'сначала логи, потом auth' без модели вложенности.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "CORS не срабатывает для 401, но работает для 200. Объясните через вложенные делегаты почему auth короткозамыкает до CORS, и где разместить UseCors. Почему попытка дописать заголовок в late middleware кидает 'response already started'?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Middlewares"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Middlewares"
+        },
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Customize ASP.NET Core behavior with middleware (HTTP logging, authentication, custom middleware)"
+        }
+      ]
+    },
+    {
+      "id": "di-lifetimes-captive-dependencies",
+      "title": "DI Lifetimes & Captive Dependency Pitfalls",
+      "layer": "ASP.NET Core",
+      "description": "Singleton/Scoped/Transient, привязка scope к запросу, captive dependency, безопасное получение Scoped из Singleton/background через IServiceScopeFactory, ValidateScopes/ValidateOnBuild.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объяснит что captive dependency: Singleton инжектит Scoped → захваченный живёт как Singleton (DbContext становится долгоживущим не-thread-safe → 'A second operation started'). Расскажет про ValidateScopes/ValidateOnBuild (Development), IServiceScopeFactory.CreateScope() в hosted service, что Transient в Singleton тоже живёт вечно (Transient с IDisposable в root scope копится — утечка). Различает root vs scoped provider. Middle знает определения, но не понимает почему в Production 'не падает' а портит данные.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "В Singleton нужен Scoped-репозиторий с DbContext. В Development бросает, в Production 'работает'. Что ломается под нагрузкой и почему ошибка плавающая? Покажите паттерн через IServiceScopeFactory и почему нельзя резолвить из root IServiceProvider.",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "DI Containers"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Microsoft.Extensions"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Transient"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Scoped"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Singleton"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Life Cycles"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Scoped"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Transient"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Singleton"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "DI Containers"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Microsoft.Extensions"
+        },
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Dependency injection in ASP.NET Core (built-in service container, register services)"
+        }
+      ]
+    },
+    {
+      "id": "options-pattern-config",
+      "title": "Configuration, Options Pattern & Validation",
+      "layer": "ASP.NET Core",
+      "description": "IOptions/IOptionsSnapshot/IOptionsMonitor и их lifetimes, валидация (DataAnnotations, ValidateOnStart, source-generated [OptionsValidator] .NET 8), источники и приоритеты конфигурации, hot-reload, captive с snapshot в singleton, секреты.",
+      "prerequisites": [
+        "di-lifetimes-captive-dependencies"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior разведёт три интерфейса: IOptions<T> — Singleton, значение фиксируется; IOptionsSnapshot<T> — Scoped, per-request (нельзя в Singleton — captive); IOptionsMonitor<T> — Singleton с OnChange/IChangeToken. Использует строго типизированные Options вместо config[\"Key\"] строками, валидирует через ValidateDataAnnotations().ValidateOnStart() (fail-fast), знает [OptionsValidator] source generator (.NET 8, без рефлексии), named options, дебаунс reloadOnChange, порядок источников (appsettings/env/user-secrets/cmd line), опасность секретов в appsettings. Middle инжектит IConfiguration и не знает почему snapshot нельзя в singleton.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Feature-flag должен подхватываться без рестарта, но читающий сервис — Singleton. Какой интерфейс возьмёте и почему IOptionsSnapshot тут даст исключение? Как сделать чтобы приложение упало на старте при невалидном конфиге, а не через час в проде?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "App Settings and Configs"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "App Settings and Configs"
+        }
+      ]
+    },
+    {
+      "id": "generic-host-hosted-services",
+      "title": "Generic Host & Hosted Services Lifecycle",
+      "layer": "ASP.NET Core",
+      "description": "Жизненный цикл IHost, IHostedService/BackgroundService, IHostedLifecycleService (.NET 8), graceful shutdown, IHostApplicationLifetime, BackgroundServiceExceptionBehavior, отмена через stoppingToken.",
+      "prerequisites": [
+        "di-lifetimes-captive-dependencies"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает что StartAsync хостед-сервисов последовательный и блокирующий — долгая работа до первого await задержит старт хоста. Расскажет про ShutdownTimeout (30с) и обрыв при превышении, про BackgroundServiceExceptionBehavior (.NET 6: необработанное исключение по умолчанию роняет хост), порядок StopAsync (обратный), IHostedLifecycleService с Starting/Started/Stopping (.NET 8), Scoped через IServiceScopeFactory. Middle пишет while(!token.IsCancellationRequested) без обработки shutdown и исключений.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "BackgroundService 'тихо умирает' в проде и обработка очереди встаёт без падения приложения. Какое изменение .NET 6 это касается и как настроить чтобы падало/рестартилось? Почему catch(Exception) без логирования/перезапуска — антипаттерн и как это связано с stoppingToken?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Native Background Service"
+        }
+      ]
+    },
+    {
+      "id": "request-lifecycle-routing-endpoints",
+      "title": "Request Lifecycle, Routing & Endpoint Resolution",
+      "layer": "ASP.NET Core",
+      "description": "Двухфазная модель endpoint routing: матчинг в UseRouting и исполнение в UseEndpoints, доступ к metadata между ними, route precedence, MatcherPolicy.",
+      "prerequisites": [
+        "middleware-pipeline-ordering"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объяснит что endpoint выбирается в UseRouting и кладётся в HttpContext.GetEndpoint(), а исполняется в UseEndpoints — поэтому между ними auth/middleware читает metadata выбранного endpoint до его выполнения. Расскажет про route precedence (литералы > параметры > catch-all, ambiguity), LinkGenerator vs IUrlHelper, IEndpointFilter metadata, кастомный MatcherPolicy. Middle думает про routing как 'словарь URL→action'.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "В middleware ДО выполнения action нужно узнать, помечен ли endpoint [RequiresFeature] чтобы короткозамкнуть. В какой момент endpoint уже выбран, как до metadata добраться, и почему делать это между UseRouting и UseEndpoints, а не дублировать routing?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Life Cycles"
+        }
+      ]
+    },
+    {
+      "id": "auth-authn-authz",
+      "title": "Authentication, Authorization & Policy Pipeline",
+      "layer": "ASP.NET Core",
+      "description": "Разделение authn (схемы, ClaimsPrincipal) и authz (policy/requirement/handler), множественные схемы, resource-based authz, fallback/default policy, JWT-валидация (issuer/audience/signature/expiry, alg confusion), 401 vs 403.",
+      "prerequisites": [
+        "request-lifecycle-routing-endpoints",
+        "middleware-pipeline-ordering"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior разделит authn (кто — ClaimsPrincipal через схемы) и authz (что — policy/requirement/IAuthorizationHandler). Расскажет про несколько схем и ForwardDefaultSelector, requirement+handler vs роли, resource-based authz (IAuthorizationService.AuthorizeAsync с ресурсом — нельзя декларативно), FallbackPolicy (закрыть всё), 401 Challenge vs 403 Forbid, несколько handlers на один requirement (OR через Succeed). Знает что валидировать в JWT (issuer/audience/signature/expiry/nbf/alg — alg=none/algorithm confusion, JWKS-ротация), разницу access/refresh/id token, почему access token нельзя в localStorage (XSS), проблему отзыва stateless JWT. Middle ставит [Authorize(Roles=...)].",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Редактировать документ можно только автору ИЛИ admin, проверка зависит от ресурса из БД. Почему [Authorize(Roles)] не покрывает, какой механизм и куда вынесете логику? Что проверяет валидация JWT кроме подписи, что за алгоритм-confusion атака, и как отозвать выданный токен?"
+    },
+    {
+      "id": "filters-vs-middleware",
+      "title": "Filters vs Middleware & Endpoint Filters",
+      "layer": "ASP.NET Core",
+      "description": "MVC filter pipeline (authorization/resource/action/exception/result), порядок, отличие от middleware, IEndpointFilter в minimal API, доступ к ModelState/arguments, DI через ServiceFilter/TypeFilter.",
+      "prerequisites": [
+        "middleware-pipeline-ordering",
+        "request-lifecycle-routing-endpoints"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объяснит что filters работают ВНУТРИ MVC/endpoint execution (после routing и model binding) и видят action arguments/ModelState/результат — чего middleware не видит. Знает порядок (authorization→resource→action→exception→result), что resource filter оборачивает model binding а action — после него. Расскажет про short-circuit через context.Result, IFilterFactory, IEndpointFilter в minimal API vs MVC-фильтры, DI через [ServiceFilter]/[TypeFilter]. Middle путает что в фильтре, а что в middleware.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Нужно закешировать результат action и при попадании в кеш не запускать model binding и сам action. Какой тип фильтра даёт эту точку и почему resource filter, а не action filter? Как решить ту же задачу в minimal API через IEndpointFilter и в чём ограничение?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Filters and Attributes"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Filters and Attributes"
+        }
+      ]
+    },
+    {
+      "id": "minimal-api-vs-mvc",
+      "title": "Minimal APIs vs MVC: Architecture & Trade-offs",
+      "layer": "ASP.NET Core",
+      "description": "Сравнение minimal APIs и MVC: model binding, фильтры, валидация, OpenAPI, производительность, организация (MapGroup), AOT/source generators, model binding internals.",
+      "prerequisites": [
+        "filters-vs-middleware",
+        "model-binding-validation"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Communication"
+      ],
+      "senior_signal": "Senior обоснует выбор: minimal API меньше overhead (нет controller activation, нет полного filter-pipeline), [AsParameters], TypedResults<T> для типобезопасности и OpenAPI-метаданных. Знает что из коробки нет ModelState-валидации — нужны IEndpointFilter или встроенная validation .NET 9 (AddValidation/source-generated), про RequestDelegateFactory/source generator, дружелюбность к AOT/trimming (рефлексия MVC мешает), RouteGroupBuilder (MapGroup). Объяснит когда MVC оправдан. Middle выбирает по моде.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Команда хочет перевести 200-эндпоинтный MVC API на minimal ради 'производительности'. Что (валидация, фильтры, MapGroup, model binding, OpenAPI) придётся переписать, где реальный выигрыш (AOT, отсутствие активации), а где он маркетинговый для I/O-bound API?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Minimal APIs"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "MVC"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Minimal APIs"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "MVC"
+        },
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Create a web API with ASP.NET Core controllers (RESTful CRUD operations)"
+        }
+      ]
+    },
+    {
+      "id": "kestrel-config-hosting-model",
+      "title": "Kestrel, Hosting Model & Connection Handling",
+      "layer": "ASP.NET Core",
+      "description": "Конфигурация Kestrel (limits, timeouts, HTTP/2-3), модель соединений, reverse proxy/ForwardedHeaders с KnownProxies, in-process vs out-of-process за IIS, защита от slowloris.",
+      "prerequisites": [
+        "generic-host-hosted-services"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает KestrelServerLimits (MaxConcurrentConnections, MaxRequestBodySize, Http2.MaxStreamsPerConnection), KeepAliveTimeout/RequestHeadersTimeout как защиту от slowloris, ForwardedHeaders с KnownProxies/KnownNetworks (иначе X-Forwarded-For игнорируется → ломается https-redirect и rate-limit по IP). Расскажет про in-process vs out-of-process ANCM, Kestrel как edge в контейнерах, HTTP/3. Middle оставляет дефолты и удивляется почему за прокси клиентский IP всегда адрес балансировщика.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "За nginx/ALB приложение видит HTTP и клиентский IP равен прокси — ломается HttpsRedirection и rate-limit по IP. Какой middleware и настройки чинят и почему KnownProxies/KnownNetworks обязательны (что с безопасностью если доверять всем прокси)?"
+    },
+    {
+      "id": "model-binding-validation",
+      "title": "Model Binding & Validation Internals",
+      "layer": "ASP.NET Core",
+      "description": "Конвейер model binding (value providers, binders, input formatters), ModelState, кастомные IModelBinder, [ApiController]-конвенции, влияние NRT на required, почему один [FromBody].",
+      "prerequisites": [
+        "filters-vs-middleware"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объяснит конвейер: value providers (route/query/form/header), что [FromBody] использует input formatter (System.Text.Json) и только один на запрос (тело — поток, читается раз), остальные value-provider-based. Расскажет про [ApiController] (автоматический 400, inference источников), кастомный IModelBinder/Provider, разницу 'отсутствует' vs default, что non-nullable reference type (.NET 6+) делает свойство implicitly required. Middle знает [FromBody]/[FromQuery] но не понимает почему нельзя два [FromBody].",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Почему нельзя два [FromBody], но можно несколько [FromForm]/[FromQuery]? Что отличает body-binding (input formatter, чтение потока) от value-provider, и как non-nullable string влияет на ModelState.IsValid без [Required]?"
+    },
+    {
+      "id": "exception-handling-problemdetails",
+      "title": "Global Error Handling, IExceptionHandler & ProblemDetails",
+      "layer": "ASP.NET Core",
+      "description": "UseExceptionHandler, цепочка IExceptionHandler (.NET 8), IProblemDetailsService, RFC 7807, маппинг исключений в status codes, обработка OperationCanceledException, утечка stack trace, exception filters vs middleware, выбор Result vs exception по границам.",
+      "prerequisites": [
+        "middleware-pipeline-ordering",
+        "filters-vs-middleware",
+        "exception-handling-internals"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает иерархию: UseExceptionHandler как terminal перезапускает pipeline, цепочка IExceptionHandler (.NET 8, AddExceptionHandler) даёт типизированную обработку с bool 'handled', AddProblemDetails()/IProblemDetailsService для единого RFC 7807 (traceId). Знает что exception filter ловит только в MVC action (не middleware), почему нельзя глушить OperationCanceledException как 500 (клиент отменил — не ошибка сервера), про утечку stack trace в Production. Различает recoverable vs programmer errors, осознанно выбирает Result/исключение по границам, не делает catch+throw ex в каждом слое. Middle оборачивает всё в try/catch в контроллере.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Нужна единая обработка: ValidationException→400 с полями, NotFoundException→404, остальное→500 с traceId без stack trace, при отмене клиентом — не логировать как ошибку. Как выстроите на IExceptionHandler-цепочке + ProblemDetails и почему exception filter не покроет исключения из middleware?"
+    },
+    {
+      "id": "output-response-caching",
+      "title": "Output Caching, Response Caching & HybridCache",
+      "layer": "ASP.NET Core",
+      "description": "OutputCache (.NET 7+, серверный, programmable) vs ResponseCaching (HTTP-заголовки/прокси), политики, vary-by, теги/инвалидация, IMemoryCache vs IDistributedCache, cache stampede, кеширование авторизованного контента, HybridCache (.NET 9).",
+      "prerequisites": [
+        "middleware-pipeline-ordering",
+        "auth-authn-authz"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior разведёт OutputCache (хранит ответ на сервере, policy, VaryByQuery/Header/Value, теги и EvictByTagAsync) и ResponseCaching (по Cache-Control/Vary, не кешируется из-за Authorization/Set-Cookie). Знает опасность кеширования персонализированного контента (утечка чужих данных), vary-by-user, IMemoryCache (in-process, eviction) vs IDistributedCache (Redis, сериализация), cache stampede и защиту (single-flight/lock), HybridCache (.NET 9, встроенная stampede protection и двухуровневый кэш). Middle включает [ResponseCache] и удивляется что не кешируется.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Анонимная главная кешируется серверно на 60с с инвалидацией по тегу при публикации, персональная лента — никогда. Почему ResponseCaching не сработает (Authorization), что даёт OutputCache с VaryBy/EvictByTag, и как предотвратить cache stampede при истечении ключа под нагрузкой? Поможет ли HybridCache?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Memory Cache"
+        }
+      ]
+    },
+    {
+      "id": "httpclientfactory-typed-clients",
+      "title": "HttpClientFactory, Handler Lifetime & Outbound Resilience",
+      "layer": "ASP.NET Core",
+      "description": "IHttpClientFactory, named/typed clients, жизненный цикл HttpMessageHandler, socket exhaustion и DNS, delegating handlers, AddStandardResilienceHandler, опасность retry на неидемпотентных.",
+      "prerequisites": [
+        "di-lifetimes-captive-dependencies"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior объяснит две проблемы: (1) new HttpClient() на запрос → socket exhaustion (TIME_WAIT), (2) статический singleton → не видит DNS-изменений. IHttpClientFactory решает пулом переиспользуемых HttpMessageHandler с HandlerLifetime (2 мин) и ротацией. Знает что typed client Transient но handler пулится, DelegatingHandler для cross-cutting (auth/correlation), AddStandardResilienceHandler (.NET 8 — timeout/retry/circuit-breaker), опасность retry на неидемпотентных POST, SocketsHttpHandler.PooledConnectionLifetime как альтернативу. Middle создаёт HttpClient в using.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Под нагрузкой SocketException 'address already in use' хотя HttpClient в using. Объясните socket exhaustion и TIME_WAIT, почему статический singleton тоже не идеал (DNS), как IHttpClientFactory решает через handler pooling/HandlerLifetime, и какой retry усугубит на POST.",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "API Clients and Communication"
+        },
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Implement HTTP clients with HttpClient and IHttpClientFactory in ASP.NET Core Blazor"
+        }
+      ]
+    },
+    {
+      "id": "httpcontext-async-pitfalls",
+      "title": "HttpContext, IHttpContextAccessor & Async Lifetime Pitfalls",
+      "layer": "ASP.NET Core",
+      "description": "Привязка HttpContext к запросу, опасность захвата в фоновые задачи, AsyncLocal-механика accessor, response streaming, отмена через RequestAborted.",
+      "prerequisites": [
+        "di-lifetimes-captive-dependencies",
+        "generic-host-hosted-services"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior знает что HttpContext не thread-safe и валиден только в рамках запроса — захват в fire-and-forget Task ведёт к NRE/повреждению (context переиспользуется/очищается). Понимает что IHttpContextAccessor хранит в AsyncLocal и значение теряется при Task.Run. Расскажет про RequestAborted (клиент отвалился), response buffering, потоковую отдачу IAsyncEnumerable. Middle прокидывает IHttpContextAccessor куда угодно и Task.Run в action.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "В action _ = Task.Run(() => ProcessAsync(httpContext.User)) и периодически NRE на User.Claims. Что с HttpContext после ответа, почему IHttpContextAccessor в Task.Run тоже не спасёт (AsyncLocal), и как корректно вынести работу (скопировать данные / IHostedService+Channel)?"
+    },
+    {
+      "id": "ef-dbcontext-lifetime-pooling",
+      "title": "DbContext Lifetime, Pooling & Thread-Safety",
+      "layer": "EF Core",
+      "description": "Время жизни DbContext (scoped), thread-safety, DbContextPool, IDbContextFactory для Blazor/фоновых, сброс состояния при возврате в пул и несовместимость pooling со scoped-инъекцией.",
+      "prerequisites": [
+        "di-lifetimes-captive-dependencies"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior объяснит что DbContext НЕ thread-safe и почему scoped ломается при параллельных await на одном инстансе ('A second operation started on this context'). Расскажет что AddDbContextPool переиспользует через сброс state, но НЕ сбрасывает кастомные поля/инжектированные per-request зависимости → скрытый шаринг; что пул фиксированного размера деградирует под нагрузкой; что pooling несовместим с конструкторной инъекцией scoped. Упомянет IDbContextFactory для Blazor Server и фоновых. Middle не знает почему параллелизм на одном контексте падает.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Blazor Server с долгоживущим scope компонента и параллельными UI-операциями над одним DbContext — какие ошибки и как перестроишь? Чем DbContextPool отличается от DbContextFactory и когда pool создаст скрытый баг с состоянием?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Framework Basics"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Entity Framework Core"
+        }
+      ]
+    },
+    {
+      "id": "ef-change-tracking-internals",
+      "title": "Change Tracking Internals & EntityState",
+      "layer": "EF Core",
+      "description": "Snapshot vs notification-based tracking, EntityState, стоимость DetectChanges на больших графах (O(n^2) в цикле), identity resolution, AutoDetectChangesEnabled.",
+      "prerequisites": [
+        "ef-dbcontext-lifetime-pooling"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает snapshot change tracking (копия исходных значений, O(n) при DetectChanges, O(n^2) в цикле) и notification entities (INotifyPropertyChanged). Объяснит когда DetectChanges вызывается неявно (перед SaveChanges, перед запросом, при доступе к Local/Entries), почему AutoDetectChangesEnabled=false ускоряет массовые правки и чем рискует. Знает identity resolution (один PK → один инстанс) и влияние на no-tracking с дублями. Middle не понимает квадратичность.",
+      "mastery_focus": [
+        "depth"
+      ],
+      "example_probe": "Цикл из 50k обновлений в одном контексте работает квадратично медленно. Что происходит внутри tracker'а на каждой итерации и какими двумя-тремя способами чинишь не теряя корректности?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Change Tracker API"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "EF Core Framework Basics"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Change Tracker API"
+        }
+      ]
+    },
+    {
+      "id": "ef-query-translation-client-eval",
+      "title": "Query Translation & Client Evaluation",
+      "layer": "EF Core",
+      "description": "Трансляция LINQ в SQL, server- vs client-evaluation, почему EF Core 3+ бросает вместо тихой client-eval, EF.Functions/HasDbFunction, ловушки непереводимых конструкций.",
+      "prerequisites": [
+        "ef-change-tracking-internals",
+        "expression-trees"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает что с EF Core 3.0 непереводимые выражения в WHERE/ORDER BY кидают InvalidOperationException, а не молча тянут таблицу (как 2.x), что client-eval допустима только в финальной проекции. Назовёт ловушки: C#-метод в предикате, DateTime.Now vs параметризация, StringComparison не транслируется, .ToList()/AsEnumerable() в середине цепочки убивает server-side фильтрацию. Знает EF.Functions (Like, Collate) и HasDbFunction. Middle не отличает где код выполняется.",
+      "mastery_focus": [
+        "depth",
+        "recognition"
+      ],
+      "example_probe": "Где EF переключится на client evaluation или упадёт и почему — как переписать чтобы предикат с хелпером ушёл в SQL (выражение/EF.Functions/HasDbFunction)? Чем отличается поведение EF Core 2.x и 8?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Entity Framework Core"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Odata"
+        }
+      ]
+    },
+    {
+      "id": "ef-n-plus-one-loading",
+      "title": "N+1, Loading Strategies, Split vs Single Query",
+      "layer": "EF Core",
+      "description": "Диагностика/устранение N+1 (lazy proxies, ручной обход, проекция без Include), eager/lazy/explicit/проекция, cartesian explosion при множественных collection-Include, AsSplitQuery и его consistency trade-off.",
+      "prerequisites": [
+        "ef-query-translation-client-eval"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior различает причины N+1 и диагностирует через SQL-логи/EventCounters. Объяснит cartesian explosion при двух collection-Include (дублирование root-строк), проекцию в DTO (Select) как способ избежать лишних колонок, lazy loading (virtual + UseLazyLoadingProxies) и его опасность (скрытый синхронный round-trip в async). Понимает что AsSplitQuery устраняет дублирование но делает N запросов без общей точки консистентности (риск рассогласования — нужен ORDER BY по уникальному ключу, snapshot/serializable), и что split не всегда быстрее (для маленьких коллекций round-trip'ы дороже). Middle просто говорит 'используй Include'.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Эндпоинт с заказами + позициями + платежами: после Include обоих коллекций объём вырос в разы хотя строк мало. Что на уровне SQL и какие два механизма EF это лечат с разными trade-offs? Когда AsSplitQuery сделает хуже и при каком уровне изоляции получишь 'рваные' данные?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Lazy / Eager / Explicit Loading"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Lazy, Eager, Explicit Loading"
+        }
+      ]
+    },
+    {
+      "id": "ef-no-tracking-projections",
+      "title": "No-Tracking Queries & Projections",
+      "layer": "EF Core",
+      "description": "AsNoTracking vs AsNoTrackingWithIdentityResolution, проекции в DTO для минимизации overfetch и обхода трекинга, QueryTrackingBehavior.",
+      "prerequisites": [
+        "ef-change-tracking-internals"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает AsNoTracking (быстрее, но дубликаты инстансов при join) и AsNoTrackingWithIdentityResolution (схлопывает ценой словаря). Знает QueryTrackingBehavior на уровне контекста для read-heavy. Объяснит что проекция в DTO через Select не материализует сущность, тянет нужные колонки и не нагружает tracker — часто лучше no-tracking над полной сущностью. Упомянет что no-tracking не отключает identity resolution автоматически. Middle лепит AsNoTracking наугад.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Read-only API с самопересекающимися навигациями даёт дубликаты на AsNoTracking. Почему и какие два варианта решают с разной ценой по CPU/памяти? Когда проекция в DTO предпочтительнее no-tracking целой сущности?"
+    },
+    {
+      "id": "ef-transactions-concurrency",
+      "title": "Transactions, Optimistic Concurrency & Locking",
+      "layer": "EF Core",
+      "description": "SaveChanges как unit-of-work, явный BeginTransaction, оптимистичный контроль через rowversion/concurrency token, DbUpdateConcurrencyException, стратегии разрешения, пессимистичные блокировки, isolation levels, lost update.",
+      "prerequisites": [
+        "ef-change-tracking-internals",
+        "consistency-models-distributed-tx"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior объяснит что один SaveChanges — атомарная транзакция, когда нужен явный BeginTransaction. Разберёт оптимистичную конкуренцию: [Timestamp]/rowversion vs IsConcurrencyToken, как EF добавляет старое значение в WHERE и кидает DbUpdateConcurrencyException при 0 affected rows, стратегии (client-wins/store-wins/merge) через GetDatabaseValues/SetOriginalValue. Различает оптимистическую (низкий contention) и пессимистическую (SELECT FOR UPDATE, высокий contention) блокировку, lost update/read-modify-write гонку, deadlock и lock ordering, что concurrency token не защищает ExecuteUpdate/raw SQL. Middle делает read-then-write без защиты.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Два пользователя редактируют запись, один молча перетёр другого. Оптимистически и пессимистически — какой выберешь для профиля и какой для декремента остатка склада, почему по-разному? Что попадёт в SQL UPDATE, как обработаешь DbUpdateConcurrencyException для merge (почему OriginalValues и GetDatabaseValues критичны)?"
+    },
+    {
+      "id": "ef-savechanges-batching-interceptors",
+      "title": "SaveChanges Pipeline, Batching & Interceptors",
+      "layer": "EF Core",
+      "description": "Внутренности SaveChanges: упорядочивание по FK, command batching (MaxBatchSize), SaveChangesInterceptor vs override, audit/soft-delete через interceptor + global query filter.",
+      "prerequisites": [
+        "ef-change-tracking-internals",
+        "ef-transactions-concurrency"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает что SaveChanges батчит INSERT/UPDATE/DELETE в один round-trip (provider-specific, MaxBatchSize) и упорядочивает по FK-зависимостям. Различает override SaveChanges vs SaveChangesInterceptor (переиспользуется при pooling, не зависит от наследования) для audit-полей, soft-delete (global query filter + перехват), domain events. Понимает что async-override обязан вызывать async-базу, что ExecuteUpdate/Delete минует этот пайплайн. Middle не знает про interceptors и pooling.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Нужны CreatedAt/UpdatedAt и soft-delete на всех сущностях. Почему SaveChangesInterceptor предпочтительнее override при pooling, и как soft-delete взаимодействует с global query filters? Как EF решает порядок INSERT'ов при графе с FK?"
+    },
+    {
+      "id": "ef-bulk-operations",
+      "title": "Bulk Operations: ExecuteUpdate/ExecuteDelete",
+      "layer": "EF Core",
+      "description": "Set-based массовые операции (EF Core 7+) против per-entity SaveChanges, рассинхронизация change tracker, обход interceptors/audit/concurrency, lock escalation, батчинг.",
+      "prerequisites": [
+        "ef-savechanges-batching-interceptors"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает что ExecuteUpdate/Delete генерируют один SQL без материализации и БЕЗ обновления трекаемых инстансов (tracker рассинхронизируется → stale данные), не проходят SaveChanges-пайплайн (не срабатывают interceptors, audit, concurrency tokens, EF-каскады — только БД-каскады). Сравнит с MaxBatchSize и bulk-extension для INSERT, знает про явную транзакцию при смешивании, lock escalation при миллионах строк и батчинг по диапазонам. Middle делает цикл с SaveChanges.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Обновить статус у 200k строк. Чем ExecuteUpdate лучше цикла SaveChanges и какие три вещи тихо обойдёт (audit, concurrency, трекинг)? Как получится баг, если после ExecuteUpdate в том же контексте обратиться к загруженным сущностям, и как лечить?"
+    },
+    {
+      "id": "ef-raw-sql-injection",
+      "title": "Raw SQL, SqlQuery & Injection Safety",
+      "layer": "EF Core",
+      "description": "FromSql/FromSqlRaw/FromSqlInterpolated, SqlQuery<T> (EF Core 7/8), безопасная параметризация, композиция LINQ поверх raw SQL, обход global query filters.",
+      "prerequisites": [
+        "ef-query-translation-client-eval"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает FromSqlInterpolated/FromSql (интерполяция → параметры — безопасно) и FromSqlRaw (строка as-is — риск injection, параметры только через DbParameter). Знает что нельзя параметризовать имена таблиц/колонок через value-параметры, композицию LINQ поверх FromSql (подзапрос), SqlQuery<T> для скалярных/DTO без маппинга, что raw SQL обходит global query filters и concurrency, что FromSql на сущности всё ещё трекается. Middle конкатенирует строки.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Где дыра для SQL injection и почему FromSqlInterpolated её закрывает, а FromSqlRaw нет? Можно ли подставить имя сортируемой колонки через параметр, если нет — как безопасно? Что вернёт SqlQuery<T> и чем отличается от FromSql на сущности?",
+      "provenance": [
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Raw SQL via Dapper-style queries"
+        }
+      ]
+    },
+    {
+      "id": "ef-value-converters-owned-json",
+      "title": "Value Converters, Owned Types & JSON Columns",
+      "layer": "EF Core",
+      "description": "ValueConverter/ValueComparer (для mutable-типов), owned entity types (table-splitting), JSON columns (ToJson, EF 7/8), влияние на запросы/трекинг/change detection, моделирование value objects.",
+      "prerequisites": [
+        "ef-change-tracking-internals",
+        "ef-query-translation-client-eval"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает зачем ValueComparer для mutable-типов под конверторами — иначе change tracking не видит изменений (сравнение по ссылке). Различает owned types (часть агрегата, table-splitting) и навигации, ограничения owned. Объяснит JSON columns (ToJson): LINQ по элементам JSON транслируется в провайдер-специфичный SQL (OPENJSON/json_value), но индексация/перф ограничены и весь документ перезаписывается при изменении. Привяжет к value objects в DDD. Middle не знает про ValueComparer.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Хранишь List<string> через ValueConverter в колонку, EF не сохраняет изменения списка — почему и что добавить? Когда owned type, когда JSON column, когда отдельная таблица для value object, и какие перф-ограничения у запросов по JSON-колонке?"
+    },
+    {
+      "id": "ef-connection-resiliency",
+      "title": "Connection Resiliency & Execution Strategy",
+      "layer": "EF Core",
+      "description": "EnableRetryOnFailure/IExecutionStrategy для transient-ошибок, взаимодействие retry с пользовательскими транзакциями (ExecuteAsync-обёртка), идемпотентность, command timeout.",
+      "prerequisites": [
+        "ef-transactions-concurrency"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает что EnableRetryOnFailure включает execution strategy, ретраящую transient-сбои, но при явной транзакции EF бросает — нужно strategy.ExecuteAsync(() => {...}) чтобы ретраить блок целиком, иначе ретрай половины даст рассогласование. Понимает риск двойного выполнения неидемпотентных side effects и важность идемпотентности. Различает transient от логических ошибок, настраивает maxRetryCount/maxDelay, знает command timeout отдельно от retry. Middle включает retry и не думает о транзакциях.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Включил EnableRetryOnFailure и обернул две SaveChanges в BeginTransaction — почему EF падает и как правильно ретраить транзакционный блок? Где retry выполнит операцию дважды и как обезопасить?"
+    },
+    {
+      "id": "ef-migrations-production",
+      "title": "EF Migrations in Production",
+      "layer": "EF Core",
+      "description": "Idempotent SQL-скрипты vs Migrate-on-startup, гонка миграций в многоинстансном проде, EnsureCreated vs Migrate, data migrations, __EFMigrationsHistory, drift. Связано с zero-downtime схемой на уровне деплоя.",
+      "prerequisites": [
+        "ef-dbcontext-lifetime-pooling"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture",
+        "Communication"
+      ],
+      "senior_signal": "Senior не применяет Migrate() на старте в многоинстансном проде (гонка миграций, длительные блокировки), а генерирует idempotent скрипты (migration bundle / script --idempotent) под контролем CD/DBA. Отличает schema- от data-миграций и почему большой backfill не льют через миграцию (блокировки, нет батчинга/прогресса). Различает EnsureCreated (без истории, dev) и Migrate, знает model drift, __EFMigrationsHistory, lock на миграции, откат как forward-fix. Глубину zero-downtime expand-contract держит в deployment-rollout-migrations. Middle зовёт Migrate() на старте на всех подах.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "6 инстансов деплоятся одновременно и каждый зовёт db.Database.Migrate() на старте — что пойдёт не так? Почему idempotent-скрипт под CD безопаснее, и чем EnsureCreated отличается от Migrate?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Code First + Migrations"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Code First + Migrations"
+        }
+      ]
+    },
+    {
+      "id": "async-void-fire-and-forget",
+      "title": "async void & Fire-and-Forget Exception Handling",
+      "layer": "Concurrency & async at scale",
+      "description": "Почему async void опасен, где допустим, корректный запуск фоновой работы без потери исключений, unobserved exceptions, TaskScheduler.UnobservedTaskException.",
+      "prerequisites": [
+        "configureawait-synccontext"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior знает: исключение из async void летит в SynchronizationContext и роняет процесс, нельзя поймать try/catch у вызывающего; async void допустим практически только в UI event-хендлерах; голый fire-and-forget (_ = SomeAsync()) теряет исключения и не наблюдается; правильно — обёртка с try/catch+логированием, либо Channel/IHostedService; знает TaskScheduler.UnobservedTaskException и что в современном .NET непронаблюдённое исключение по умолчанию НЕ роняет процесс (в отличие от .NET 4.0), но это не повод его терять. Middle пишет async void в хендлерах и _ =.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "В контроллере _ = SendEmailAsync(...) чтобы не ждать. Что с исключением если SMTP недоступен, почему нельзя поймать в контроллере, и чем фоновая отправка через async void в таймере хуже? Как корректно сделать fire-and-forget с наблюдаемостью?"
+    },
+    {
+      "id": "taskcompletionsource-pitfalls",
+      "title": "TaskCompletionSource & RunContinuationsAsynchronously",
+      "layer": "Concurrency & async at scale",
+      "description": "Мост callback→Task через TCS, главный footgun — синхронное исполнение continuation на потоке SetResult, дедлоки/инверсия приоритетов, SetResult vs TrySetResult.",
+      "prerequisites": [
+        "configureawait-synccontext"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает: по умолчанию continuation выполняется СИНХРОННО на потоке вызвавшем SetResult/SetException — чужой await-код выполнится прямо внутри вашего lock/callback → дедлоки, инверсия, захват библиотечного потока; решение — TaskCreationOptions.RunContinuationsAsynchronously; различает SetResult vs TrySetResult (гонка двойного завершения кидает InvalidOperationException), знает non-generic TaskCompletionSource (.NET 5+). Middle вызывает SetResult не думая о потоке.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Обёртка над event-based API через TCS, SetResult из колбэка держа её внутренний lock — редкие дедлоки под нагрузкой. Объясните механизм и какой ровно один флаг при создании TCS его убирает. Чем SetResult отличается от TrySetResult в гонке?"
+    },
+    {
+      "id": "threadpool-starvation",
+      "title": "Thread-pool Starvation",
+      "layer": "Concurrency & async at scale",
+      "description": "Истощение пула из-за блокирующих вызовов на async-путях, медленный hill-climbing рост, диагностика по latency-всплескам, queue length и счётчикам, отличие от GC-пауз и lock contention.",
+      "prerequisites": [
+        "async-void-fire-and-forget"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior объясняет: ThreadPool добавляет потоки медленно (hill-climbing ~1/0.5–1с сверх MinThreads), блокировка на async-пути съедает потоки → каскадная деградация latency; знает ThreadPool.SetMinThreads как тактический хак и минусы; смотрит ThreadPool.ThreadCount/PendingWorkItemCount/dotnet-counters (System.Runtime), отличает starvation от GC-пауз (gen2/pause %) и lock contention (Monitor Lock Contention Count); знает дамп со множеством потоков в WaitOne и что первопричину (sync-over-async) надо убирать, не тюнить пул. Middle говорит 'увеличить число потоков'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Сервис под нагрузкой даёт p99 в секунды, CPU 30%, GC спокоен, через минуту восстанавливается. Как за 10 минут докажете что это thread-pool starvation, а не lock contention или внешний таймаут? Какие счётчики и какой паттерн ожидаете?"
+    },
+    {
+      "id": "locks-async-coordination",
+      "title": "Locking Primitives & Async-safe Mutual Exclusion",
+      "layer": "Concurrency & async at scale",
+      "description": "lock/Monitor, SemaphoreSlim (async WaitAsync), ReaderWriterLockSlim, System.Threading.Lock (.NET 9), почему нельзя await под lock, reentrancy, lock convoy, contention.",
+      "prerequisites": [
+        "memory-model-barriers"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает: внутри lock/Monitor нельзя await (lock привязан к потоку, continuation может уйти на другой); для async-взаимного исключения нужен SemaphoreSlim(1,1) с WaitAsync/Release в try/finally; знает reentrancy (lock реентрантен, SemaphoreSlim нет → самодедлок), новый Lock (.NET 9) с EnterScope, когда ReaderWriterLockSlim оправдан, стоимость contention и lock convoy. Middle ставит lock на всё.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Сериализовать доступ к ресурсу внутри async-метода (обновление кэша, один writer). Почему обычный lock не компилируется/не годится и что возьмёшь? Покажи паттерн с SemaphoreSlim. Где self-deadlock при реентрантном вызове и что нового даёт System.Threading.Lock в .NET 9?"
+    },
+    {
+      "id": "cancellation-tokens",
+      "title": "CancellationToken Propagation & Linked Sources",
+      "layer": "Concurrency & async at scale",
+      "description": "Сквозная передача отмены, CreateLinkedTokenSource + обязательный Dispose, CancelAfter, кооперативность, OperationCanceledException vs TaskCanceledException, утечки регистраций.",
+      "prerequisites": [],
+      "axes": [
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior говорит про кооперативность (поток не убивается), CreateLinkedTokenSource и обязательный Dispose (иначе утечка через регистрацию в долгоживущем родителе), разницу OperationCanceledException vs TaskCanceledException (ловить первый), ThrowIfCancellationRequested vs IsCancellationRequested, token.Register и поток исполнения колбэков, CancellationToken.None vs default, CancelAfter как таймаут без гонки, что отмена не гарантирует немедленную остановку. Middle принимает токен и иногда пробрасывает.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Ограничить операцию общим таймаутом 5с но уважать внешний токен от HTTP-запроса. Покажи реализацию. Где типичная утечка памяти при долгоживущем родительском токене и как в catch отличить отмену-по-таймауту от отмены-клиентом?"
+    },
+    {
+      "id": "channels-backpressure",
+      "title": "System.Threading.Channels & Backpressure",
+      "layer": "Concurrency & async at scale",
+      "description": "Producer/consumer на Channel<T>, bounded vs unbounded, BoundedChannelFullMode, backpressure для устойчивости, корректное завершение, сравнение с Dataflow/BlockingCollection.",
+      "prerequisites": [
+        "cancellation-tokens"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior выбирает bounded channel ради backpressure, обсуждает BoundedChannelFullMode (Wait/DropOldest/DropWrite/DropNewest), SingleReader/SingleWriter, AllowSynchronousContinuations; корректное завершение через Writer.Complete(ex) и await foreach по ReadAllAsync; понимает что unbounded channel — скрытая OOM-бомба при producer быстрее consumer; сравнивает с TPL Dataflow и BlockingCollection (блокирует поток). Middle использует ConcurrentQueue + цикл или unbounded.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Поток событий из Kafka обрабатывается пулом N воркеров, обработка медленнее входа. Спроектируйте конвейер на Channels. Что при пике с unbounded и какой FullMode выберете чтобы не потерять данные и не уронить процесс? Как backpressure от bounded-канала дотянется до Kafka-консьюмера?"
+    },
+    {
+      "id": "parallelism-vs-concurrency",
+      "title": "Parallel.ForEachAsync & Degree of Parallelism",
+      "layer": "Concurrency & async at scale",
+      "description": "Data-parallelism (Parallel/PLINQ, CPU-bound) vs async-concurrency (I/O-bound), управление степенью параллелизма, борьба с неограниченным fan-out, сбор всех исключений.",
+      "prerequisites": [
+        "threadpool-starvation",
+        "channels-backpressure"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior различает CPU-bound (Parallel.For/PLINQ) и I/O-bound (ограниченная concurrency), применяет Parallel.ForEachAsync с MaxDegreeOfParallelism или SemaphoreSlim-throttle; понимает что Parallel.For блокирует потоки и не годится для async-тел; что неограниченный Task.WhenAll(select) на 10000 элементов создаёт всплеск на БД/API и connection-pool exhaustion; знает как собрать ВСЕ исключения (WhenAll прячет все кроме первого — нужен task.Exception/AggregateException) и отменить остаток. Middle делает Task.WhenAll(select) на всё.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Обработать 50000 URL HTTP-запросами максимально быстро не уронив целевой сервис и connection pool. Два подхода: SemaphoreSlim и Parallel.ForEachAsync. Чем плох наивный Task.WhenAll(select)? Как собрать ВСЕ исключения и отменить остаток при первой критической ошибке?"
+    },
+    {
+      "id": "periodictimer-background-work",
+      "title": "PeriodicTimer, Timers & Long-running Background Work",
+      "layer": "Concurrency & async at scale",
+      "description": "PeriodicTimer vs System.Threading.Timer, реентрантность тиков, async void в колбэке, BackgroundService и реакция на stoppingToken, graceful shutdown.",
+      "prerequisites": [
+        "cancellation-tokens",
+        "async-void-fire-and-forget"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior знает: классический Timer вызывает колбэк на thread-pool и перекрывает тики если работа дольше периода (реентрантность), async void в колбэке теряет исключения; PeriodicTimer.WaitForNextTickAsync даёт неперекрывающиеся тики, отмену и нет async void; понимает что необработанное исключение в ExecuteAsync (.NET 6+) роняет хост (BackgroundServiceExceptionBehavior), важность реакции на stoppingToken и дедлайн ShutdownTimeout, drift между периодами. Middle вешает Timer с async void.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Воркер раз в 10с опрашивает очередь, но один цикл иногда длится 25с. Реализация на PeriodicTimer внутри BackgroundService. Что было бы не так с System.Threading.Timer и async void при таком разбросе? Что с хостом если из ExecuteAsync вылетит необработанное исключение и как настроить?",
+      "provenance": [
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Native Background Service"
+        }
+      ]
+    },
+    {
+      "id": "test-doubles-isolation",
+      "title": "Test Doubles, Isolation & Testability Design",
+      "layer": "Cross-cutting & quality",
+      "description": "Осознанное применение mock/stub/fake/spy, interaction vs state-based тесты, хрупкость over-specified тестов, проектирование под тестируемость без переусложнения, тест-дабл как признак плохой границы.",
+      "prerequisites": [],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Communication"
+      ],
+      "senior_signal": "Senior различает stub (данные) vs mock (verifiable expectation) vs fake (рабочая лёгкая реализация, in-memory repo), говорит про хрупкость interaction-based тестов (моки тестируют реализацию а не поведение), про fakes вместо mock-цепочек, про то когда тест-дабл — признак плохой границы абстракции, про опасность мокать неконтролируемые типы. Middle мокает всё и проверяет вызовы через Verify (ломается при рефакторинге).",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Сервис делает 4 вызова к зависимостям, тест проверяет все 4 через Verify(). После рефакторинга (тот же результат) половина тестов покраснела. Что не так с дизайном и как переписать чтобы рефакторинг не ломал? Когда mock оправдан, а когда нужен fake?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Unit Testing"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Mocking - NSubstitute"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Moq"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "FakeItEasy"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Mocking"
+        }
+      ]
+    },
+    {
+      "id": "deterministic-time-async-testing",
+      "title": "Deterministic Testing of Time & Async",
+      "layer": "Cross-cutting & quality",
+      "description": "Устранение недетерминизма: TimeProvider/FakeTimeProvider (.NET 8), тестирование таймаутов/ретраев/debounce без реального ожидания, борьба с flaky-тестами на async/многопоточном коде.",
+      "prerequisites": [
+        "test-doubles-isolation"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает TimeProvider/FakeTimeProvider (.NET 8) и почему лучше самописного IClock (покрывает Timer, Task.Delay, PeriodicTimer, Stopwatch через GetTimestamp), двигает виртуальное время через Advance() для retry/debounce, понимает источники флакоты (race на ConfigureAwait, неконтролируемый SyncContext, опора на тайминги, общий статический стейт), делает async-тест детерминированным через TaskCompletionSource/каналы вместо опросов. Middle ставит Task.Delay/Thread.Sleep.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Протестировать circuit breaker, открывающийся на 30с после 5 ошибок и переходящий в half-open, не ждя реально и без флака. Как в .NET 8 с FakeTimeProvider? Что делает Advance() с зарегистрированными таймерами и как Polly v8 цепляет TimeProvider?"
+    },
+    {
+      "id": "integration-testing",
+      "title": "Integration Testing with WebApplicationFactory & Testcontainers",
+      "layer": "Cross-cutting & quality",
+      "description": "Реальный pipeline (WebApplicationFactory) и реальные зависимости (Testcontainers) вместо in-memory, граница unit/integration/e2e, почему EF InMemory не ловит SQL-ограничения, изоляция состояния (Respawn/транзакция/шаблон), параллелизм.",
+      "prerequisites": [
+        "test-doubles-isolation",
+        "deterministic-time-async-testing"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior знает что InMemory не ловит SQL-ограничения/транзакции/конкурентность/raw SQL и не рекомендован командой EF, предпочитает Testcontainers с настоящим Postgres/SQL Server, подменяет зависимости через WithWebHostBuilder/ConfigureTestServices, понимает изоляцию между тестами (Respawn/транзакционный откат vs пересоздание схемы vs шаблонная БД), стоимость, параллелизм xUnit collection fixtures, где провести границу пирамиды чтобы не получить ледяной конус. Middle тестирует через InMemory и думает что покрыл БД.",
+      "mastery_focus": [
+        "application",
+        "depth"
+      ],
+      "example_probe": "Тесты через EF InMemory зелёные, но в проде падают уникальные индексы и дедлоки. Почему InMemory это пропускает и как перестроишь? Как обеспечишь изоляцию данных между параллельными тестами на одной реальной БД и не утонешь в стоимости контейнеров?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Test Containers"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "WebApplicationFactory"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Integration Testing"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "WebApplicationFactory"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Test Containers"
+        }
+      ]
+    },
+    {
+      "id": "structured-logging",
+      "title": "Structured Logging & Log Hygiene",
+      "layer": "Cross-cutting & quality",
+      "description": "ILogger с message templates, LoggerMessage source generator, IsEnabled-проверка, scopes/correlation, опасность PII/секретов, cardinality и стоимость на hot path.",
+      "prerequisites": [],
+      "axes": [
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior использует message templates ({UserId}) для машинно-парсимых полей (а не интерполяцию строки, теряющую структуру), знает LoggerMessage source generator (нет боксинга, нет аллокаций до проверки уровня, кэш делегатов), IsEnabled-проверку до форматирования, log scopes/correlation id, опасность логировать PII/секреты (санитайзинг через [LogProperties]/redaction), cardinality и стоимость, что high-volume логи на hot path — перф-проблема. Middle делает LogInformation($\"User {id}\") теряя структуру.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "На hot path (десятки тысяч RPS) логирование стало статьёй в профайле и аллокациях. Что дорого в обычном LogInformation с интерполяцией (когда строка строится даже если Info выключен?), и как source-generated LoggerMessage и IsEnabled это убирают?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Log Frameworks"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Serilog"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "NLog"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Serilog"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "NLog"
+        }
+      ]
+    },
+    {
+      "id": "metrics-cardinality",
+      "title": "Metrics, Histograms & Cardinality Control",
+      "layer": "Cross-cutting & quality",
+      "description": "System.Diagnostics.Metrics (Counter/UpDownCounter/Observable/Histogram), выбор инструмента, перцентили vs среднее, cardinality explosion, bucket-границы под SLO, RED/USE.",
+      "prerequisites": [
+        "structured-logging"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Architecture"
+      ],
+      "senior_signal": "Senior понимает почему среднее по latency бесполезно (нужны гистограммы/p99), различает counter/up-down-counter/observable gauge/histogram, остро чувствует cardinality explosion (теги с высоким кардиналити — id, url с параметрами — взрывают TSDB, каждая комбинация = отдельный time series), знает System.Diagnostics.Metrics vs prometheus-net, встроенные ASP.NET/HttpClient метрики (.NET 8), RED/USE и выбор bucket-границ под SLO. Middle мерит среднее и кладёт user_id в теги.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "После метрик Prometheus жрёт память и тормозит. В коде Counter с тегом request path с id (/orders/12345). Объясни механику (почему растёт память бэкенда) и как переделать на route template. Почему p99 нельзя посчитать из счётчика суммы/количества и что нужно?"
+    },
+    {
+      "id": "distributed-tracing-slo",
+      "title": "Distributed Tracing, OpenTelemetry, Activity & SLOs",
+      "layer": "Cross-cutting & quality",
+      "description": "Activity/ActivitySource как нативный примитив, OTel как экспортёры поверх, W3C traceparent propagation через HttpClient/messaging, tags vs baggage, sampling (head/tail/parent-based), связь trace с логами/метриками, SLI/SLO/error budget, потеря контекста на async-границах.",
+      "prerequisites": [
+        "metrics-cardinality",
+        "resilience-polly"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior понимает что Activity — нативный .NET-примитив (OTel SDK — экспортёры/семантика поверх), context propagation (W3C traceparent/tracestate) через HttpClient/messaging, разницу tags vs baggage (baggage летит по сети во все downstream — стоит денег/утечки), стратегии sampling (head vs tail-based, parent-based) и trade-offs, связь trace_id с логами/метриками (exemplars), где теряется контекст (фоновые таски, кастомные пулы, очереди, ContinueWith без ExecutionContext). Мыслит SLI/SLO/error budget, symptom-based alerting. Middle включает трейсинг галочкой и алертит на CPU.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Запрос API→очередь→консьюмер, в трейсе цепочка рвётся на границе очереди. Почему контекст не пробрасывается и как передать traceparent через сообщение? Чем baggage отличается от tags и почему опасно туда пихать данные? Какой sampling для 100k RPS и почему tail-based?",
+      "provenance": [
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Implement observability using OpenTelemetry and view data in Application Insights"
+        },
+        {
+          "source": "az204",
+          "topic": "Monitor and analyze metrics, logs, and traces"
+        }
+      ]
+    },
+    {
+      "id": "resilience-polly",
+      "title": "Resilience Patterns: Retry, Timeout, Circuit Breaker, Bulkhead",
+      "layer": "Cross-cutting & quality",
+      "description": "Polly v8 / Microsoft.Extensions.Resilience: retry с backoff+jitter, per-attempt vs overall timeout, circuit breaker, bulkhead/rate limiter, идемпотентность, правильный порядок политик, ResiliencePipeline, retry storm.",
+      "prerequisites": [
+        "deterministic-time-async-testing",
+        "cancellation-tokens"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior знает что ретраи без jitter дают retry storm/thundering herd, что ретраить можно только идемпотентные (и как сделать неидемпотентную идемпотентной через idempotency key), правильный порядок наложения (timeout внутри retry = per-attempt vs снаружи = overall), зачем circuit breaker (fail fast, дать сервису восстановиться) и bulkhead/rate limiter (изоляция пулов), Polly v8 ResiliencePipelineBuilder (не legacy Policy.Wrap), почему retry+CB без backpressure усугубляют каскад. Middle вешает retry на всё.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Downstream деградировал, твой сервис добил его ретраями и сам упал по исчерпанию потоков. Разбери цепочку: что усугубило, в каком порядке timeout/retry/circuit breaker в ResiliencePipeline, зачем jitter и bulkhead? Какие операции ретраить нельзя и как сделать POST безопасным для ретрая?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Polly"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Polly"
+        },
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Make a cloud-native .NET microservices app fault-tolerant"
+        }
+      ]
+    },
+    {
+      "id": "rate-limiting-middleware",
+      "title": "Rate Limiting Middleware & Backpressure",
+      "layer": "Cross-cutting & quality",
+      "description": "System.Threading.RateLimiting / UseRateLimiter (.NET 7+): алгоритмы (fixed/sliding window, token bucket, concurrency), partitioning по ключу, QueueLimit, 429/Retry-After, in-memory vs distributed при горизонтальном масштабировании.",
+      "prerequisites": [
+        "resilience-polly",
+        "kestrel-config-hosting-model"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior знает разницу алгоритмов (fixed window — всплеск на границе окна; sliding сглаживает; token bucket для burst; concurrency для in-flight), PartitionedRateLimiter с ключом по user/IP/API-key, QueueLimit и OldestFirst, OnRejected с 429 и Retry-After. Понимает что in-memory limiter не шарится между инстансами (нужен распределённый стор), что rate-limit по IP за прокси бессмыслен без ForwardedHeaders, и что limiter — backpressure дополняющий Kestrel MaxConcurrentConnections. Middle руками считает запросы в словаре.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Лимит 100 req/min на API-ключ с burst и очередью на 10, отдавая 429 c Retry-After при отказе. Какой алгоритм и partition key, в чём подвох fixed window на границе окна, и почему in-memory limiter перестанет быть корректным при масштабировании на 5 подов?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Implement policies for APIs"
+        }
+      ]
+    },
+    {
+      "id": "health-checks-graceful-shutdown",
+      "title": "Health Checks & Graceful Shutdown",
+      "layer": "Cross-cutting & quality",
+      "description": "Liveness/readiness/startup пробы для оркестратора, SIGTERM-дренаж in-flight запросов, отмена через CancellationToken от хоста, IHostApplicationLifetime, недопущение потери фоновой работы при деплое.",
+      "prerequisites": [
+        "generic-host-hosted-services"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture"
+      ],
+      "senior_signal": "Senior различает liveness (жив ли процесс — рестарт) vs readiness (готов принимать трафик — вывод из балансировки) vs startup-пробы, понимает что readiness не должен зависеть от внешних зависимостей так чтобы лёгкая деградация downstream вызвала рестарт флота, знает graceful shutdown: SIGTERM → остановка приёма → дренаж in-flight в пределах ShutdownTimeout, проброс CancellationToken от хоста, IHostApplicationLifetime, почему BackgroundService должен уважать stoppingToken. Middle отдаёт один /health=200.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "При rolling-деплое часть запросов получает 5xx и теряются фоновые сообщения. Что происходит при SIGTERM, чем readiness отличается от liveness здесь, и как построить graceful shutdown чтобы in-flight и фоновая обработка завершились без потерь? Почему не вешать БД в liveness?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Implement availability tests and alerts"
+        }
+      ]
+    },
+    {
+      "id": "secrets-owasp-dotnet",
+      "title": "Secrets Management & OWASP for .NET",
+      "layer": "Cross-cutting & quality",
+      "description": "Защита секретов (Key Vault, ротация, не в коде/логах/git), митигация OWASP-классов в .NET: небезопасная десериализация (BinaryFormatter, TypeNameHandling), mass assignment, SSRF, инъекции, хеширование паролей (PBKDF2/Argon2), constant-time сравнение.",
+      "prerequisites": [
+        "auth-authn-authz"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth",
+        "Communication"
+      ],
+      "senior_signal": "Senior мыслит шире SQL-инъекций: знает опасность небезопасной десериализации (BinaryFormatter удалён из .NET 9 by design, TypeNameHandling.All в Newtonsoft = RCE, почему System.Text.Json безопаснее — не материализует произвольные типы), mass assignment/over-posting (нужны отдельные DTO а не байнд в entity), SSRF при пользовательских URL, разницу шифрования и хеширования паролей (PBKDF2/Argon2 с солью, не SHA256), Key Vault + ротацию + отсутствие секретов в логах/git/appsettings, constant-time сравнение токенов (timing-атаки). Middle помнит только про SQL-инъекции.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "В ревью: пароли через SHA256, JSON с TypeNameHandling.All, endpoint биндит запрос прямо в EF-entity. Разбери каждую — чем грозит и как правильно. Почему BinaryFormatter небезопасен by design и убран, и чем System.Text.Json по умолчанию защищён от того же класса атак?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Secure app configuration data by using Azure App Configuration or Azure Key Vault"
+        },
+        {
+          "source": "az204",
+          "topic": "Develop code that uses keys, secrets, and certificates stored in Azure Key Vault"
+        }
+      ]
+    },
+    {
+      "id": "production-profiling-diagnostics",
+      "title": "Production Profiling & Live Diagnostics",
+      "layer": "Cross-cutting & quality",
+      "description": "Live-диагностика без рестарта: dotnet-counters/-trace/-dump/-gcdump, SOS (clrstack/dumpheap/gcroot/parallelstacks), различение thread-pool starvation/дедлока/managed-утечки/LOH-фрагментации, накладные расходы наблюдения.",
+      "prerequisites": [
+        "metrics-cardinality",
+        "threadpool-starvation",
+        "large-object-heap"
+      ],
+      "axes": [
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior снимает live-данные без рестарта: dotnet-counters для thread-pool/GC/alloc rate/queue length, dotnet-trace для CPU-профиля, dotnet-dump+SOS для зависаний/утечек, gcdump для роста памяти; распознаёт starvation (рост queue length + низкий CPU, симптом sync-over-async), отличает managed-утечку (растущий gen2/корни) от LOH-фрагментации, понимает sampling vs allocation-профилирование и накладные расходы на проде. Middle добавляет логи и перезапускает.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Сервис периодически перестаёт отвечать, CPU низкий, рестарт помогает временно, рестартить нельзя — диагностируй вживую. Какими инструментами и счётчиками отличишь starvation от дедлока от утечки? Как симптоматика sync-over-async выглядит в dotnet-counters?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "BenchmarkNet"
+        }
+      ]
+    },
+    {
+      "id": "solid-patterns-practice",
+      "title": "SOLID & Patterns Applied (vs Over-engineering)",
+      "layer": "Cross-cutting & quality",
+      "description": "Прагматичное применение SOLID и паттернов: увидеть нарушение, выбрать паттерн под проблему, и — важнее — не плодить абстракции там где не нужны (YAGNI, premature abstraction).",
+      "prerequisites": [
+        "test-doubles-isolation"
+      ],
+      "axes": [
+        "Architecture",
+        "Communication",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior рассуждает в trade-offs: когда DIP/интерфейс реально нужен (нестабильная зависимость, граница модуля, вторая реализация) а когда premature abstraction/speculative generality, видит подмену LSP и нарушение ISP в толстых интерфейсах, отличает паттерн решающий проблему от паттерна ради паттерна, говорит про когезию/связанность и YAGNI, может аргументировать удаление абстракции а не только добавление. Middle цитирует определения и пихает интерфейс на каждый класс 'ради тестируемости'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Junior завёл интерфейс с одной реализацией на каждый сервис 'чтобы мокать'. Где оправдано, где вред, и как объяснишь на ревью? Приведи пример нарушения LSP, которое компилируется и проходит часть тестов, но ломает контракт.",
+      "provenance": [
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Software Design and Architecture"
+        }
+      ]
+    },
+    {
+      "id": "service-boundaries-decomposition",
+      "title": "Service Boundaries & Decomposition",
+      "layer": "Architecture & system design",
+      "description": "Границы сервисов по бизнес-возможностям и владению данными (не техническим слоям), aggregate-граница = одна транзакция, bounded context, модульный монолит vs микросервисы, distributed monolith как анти-паттерн.",
+      "prerequisites": [],
+      "axes": [
+        "Architecture",
+        "Communication"
+      ],
+      "senior_signal": "Senior рассуждает границами в терминах транзакционной согласованности и владения данными: одна aggregate-граница = одна транзакция, нельзя делить то что меняется атомарно. Заговорит про bounded context, что распределённая транзакция через сервисы — антипаттерн, data-on-the-inside vs outside, опасность shared database, что преждевременное дробление (distributed monolith) хуже монолита. Сошлётся на модульный монолит как дефолт и стоимость эксплуатации каждого сервиса. Middle делит по техническим слоям или сущностям БД.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Монолит платежей: счета, лимиты, антифрод, нотификации. Где границы сервисов и почему именно там? Что с согласованностью списания и проверки лимита если они в разных сервисах? Признак что границу провели неправильно уже в проде?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Microservices"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "API Gateway"
+        },
+        {
+          "source": "mslearn-dotnet",
+          "topic": "Create cloud-native apps and services with .NET and ASP.NET Core"
+        }
+      ]
+    },
+    {
+      "id": "consistency-models-distributed-tx",
+      "title": "Consistency Models & Distributed Transactions",
+      "layer": "Architecture & system design",
+      "description": "Модели согласованности (strong/eventual/causal/read-your-writes/monotonic), почему 2PC непрактичен через сервисы, isolation levels БД, write skew, окно несогласованности.",
+      "prerequisites": [
+        "service-boundaries-decomposition"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior оперирует конкретными моделями (strong/eventual/causal/read-your-own-writes/monotonic reads), а не дихотомией. Объяснит почему 2PC даёт блокировки и единую точку отказа координатора → не масштабируется через сервисы, а внутри одной БД transaction уместен. Свяжет с isolation levels (read committed по умолчанию, write skew, serializable/snapshot). Понимает что eventual consistency — гарантия сходимости, не 'иногда неправильно навсегда', проговаривает окно в числах. Middle считает транзакцию БД и согласованность распределёнки одним и тем же.",
+      "mastery_focus": [
+        "depth"
+      ],
+      "example_probe": "Два параллельных запроса списывают с одного счёта, баланс не в минус. На одной БД — какой isolation level и где write skew? Если счёт и лимит в разных сервисах — почему 2PC плохо и что дашь вместо strong consistency?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Set the appropriate consistency level for operations"
+        }
+      ]
+    },
+    {
+      "id": "cqrs-read-write-separation",
+      "title": "CQRS & Read/Write Separation",
+      "layer": "Architecture & system design",
+      "description": "Разделение моделей чтения/записи, материализованные read-модели, eventual consistency read-side, read-your-own-writes проблема, когда CQRS оправдан а когда оверинжиниринг.",
+      "prerequisites": [
+        "consistency-models-distributed-tx"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior отделяет CQRS (две модели) от Event Sourcing (ортогональны) и от физического разделения БД. Объяснит что read-модель почти всегда eventually consistent относительно write-side, лаг в UX (read-your-own-writes) и решения (sticky read, версионирование, чтение из write-модели после команды). Назовёт цену: дублирование, проекции, перестройка при изменении схемы, отставание проекции. Скажет когда CQRS не нужен (простой CRUD). Middle считает CQRS обязательным или сводит к 'отдельные DTO'.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Команды пишут в основную БД, проекция строит read-модель. Пользователь создаёт заказ и сразу идёт на 'мои заказы' — заказа нет. Что происходит и какие варианты починить не убив масштабируемость чтения? Как перестроить read-модель при смене схемы не останавливая запись?"
+    },
+    {
+      "id": "concurrency-control-locking",
+      "title": "Concurrency Control & Locking (Architectural)",
+      "layer": "Architecture & system design",
+      "description": "Оптимистические vs пессимистические блокировки на уровне дизайна, выбор по contention, lost update/read-modify-write, distributed locks и их ненадёжность (Redlock-споры), связь с идемпотентностью.",
+      "prerequisites": [
+        "consistency-models-distributed-tx"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior выбирает по contention: optimistic (rowversion/xmin/concurrency token, retry на конфликте) при низкой конкуренции, pessimistic (SELECT FOR UPDATE) при высокой и коротких транзакциях. Назовёт lost update и read-modify-write гонку, deadlock/lock ordering, опасность долгой транзакции держащей блокировку. Свяжет с идемпотентностью и распределёнными блокировками (их ненадёжность — Redlock-споры). Реализационные детали EF держит в ef-transactions-concurrency. Middle делает read-then-write без защиты.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Два пользователя редактируют документ, один молча перетёр другого. Оптимистически и пессимистически — какой для редактирования профиля, какой для декремента остатка склада и почему по-разному? Почему распределённая блокировка через Redis ненадёжна?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Distributed Lock"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Distributed Lock"
+        }
+      ]
+    },
+    {
+      "id": "event-driven-messaging",
+      "title": "Event-Driven Architecture & Messaging",
+      "layer": "Architecture & system design",
+      "description": "Брокеры (Kafka/RabbitMQ/Service Bus), event vs command vs document, at-least-once vs exactly-once, порядок (партиционирование/session), consumer lag, очередь vs лог, DLQ/poison messages, competing consumers.",
+      "prerequisites": [
+        "service-boundaries-decomposition"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает event (факт) vs command (просьба) vs document message, понимает at-least-once как практический дефолт, exactly-once как иллюзию без идемпотентности на потребителе. Заговорит про порядок (партиционирование по ключу в Kafka, single active consumer/session в Service Bus), consumer lag и backpressure, разницу очереди и лога (RabbitMQ удаляет после ack, Kafka хранит offset и реплей), DLQ/poison messages, competing consumers и почему параллелизм ломает порядок. Middle 'просто шлём в очередь' без гарантий.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "A публикует OrderPaid, B начисляет бонусы, брокер at-least-once, B получил дважды и начислил дважды. Как спроектировать B чтобы не повторялось и почему exactly-once-delivery не поможет? Если OrderUpdated много и должны применяться по порядку — как обеспечить порядок не теряя параллелизм между разными заказами?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Message Brokers"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Kafka"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "RabbitMQ"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Azure Service Bus"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Message Brokers"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Kafka"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "RabbitMQ"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Azure Service Bus"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Message Bus"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement solutions that use Azure Service Bus"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement solutions that use Azure Queue Storage"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement solutions that use Azure Event Hubs"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement solutions that use Azure Event Grid"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement input and output bindings"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement function triggers by using data operations, timers, and webhooks"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement change feed notifications"
+        }
+      ]
+    },
+    {
+      "id": "idempotency-deduplication",
+      "title": "Idempotency & Deduplication",
+      "layer": "Architecture & system design",
+      "description": "Идемпотентные операции/API: idempotency keys, дедупликация на потребителе, атомарная проверка-и-вставка (UPSERT/unique constraint), обработка повторов при ретраях и дубликатах, окно дедупликации.",
+      "prerequisites": [
+        "event-driven-messaging"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior строит идемпотентность как свойство получателя: уникальный business/idempotency key, хранилище ключей с TTL, атомарная проверка-и-вставка (UPSERT/unique constraint/INSERT ON CONFLICT) чтобы исключить гонку двух параллельных дубликатов. Различает natural idempotency (PUT/SET) и операции требующие явного ключа (платёж). Обсудит окно дедупликации, что вернуть на повтор (тот же ответ, не ошибку), in-flight состояние (второй параллельный ждёт/получает тот же результат), связь с outbox. Middle ставит 'select потом insert' с гонкой.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Клиент дёргает POST /payments, получает таймаут и ретраит — первый прошёл. Спроектируй API чтобы деньги списались ровно один раз. Что хранить, какой ключ, как защититься от двух одновременных ретраев одного ключа? Что вернёшь на повтор если первый ещё в обработке?"
+    },
+    {
+      "id": "saga-outbox",
+      "title": "Distributed Data Consistency: Saga & Outbox",
+      "layer": "Architecture & system design",
+      "description": "Согласованность между сервисами без распределённых транзакций: Saga (оркестрация/хореография), компенсирующие действия, Transactional Outbox + CDC/poller для dual-write problem, semantic locks.",
+      "prerequisites": [
+        "idempotency-deduplication",
+        "event-driven-messaging"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior решает через saga с компенсациями осознавая отсутствие изоляции (промежуточные состояния видны, нужны semantic locks/pending-статусы). Объяснит dual-write problem (запись в БД + публикация в брокер не атомарны) и почему Transactional Outbox + CDC/poller её решает (событие в той же транзакции, релей доставляет at-least-once → нужна идемпотентность на потребителе). Сравнит оркестрацию (центральный координатор, видимый flow) и хореографию (связность через события, тяжело отлаживать). Назовёт что компенсация — не rollback и бывают некомпенсируемые шаги. Middle предлагает 'обернуть в транзакцию' через границы сервисов.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Заказ: списать склад, списать деньги, создать доставку, без распределённой транзакции. Спроектируй saga: что при падении на оплате после резерва склада? Как сервис атомарно сохранит состояние И опубликует событие? Что с шагом который компенсировать нельзя (письмо ушло)?"
+    },
+    {
+      "id": "caching-strategies-invalidation",
+      "title": "Caching Strategies & Invalidation",
+      "layer": "Architecture & system design",
+      "description": "Cache-aside/write-through/write-behind, распределённый кэш (Redis), инвалидация и её гонки, cache stampede/thundering herd, negative caching, hot-key, in-memory vs distributed, HybridCache (.NET 9).",
+      "prerequisites": [
+        "consistency-models-distributed-tx"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior понимает что инвалидация — трудная часть, обсуждает гонку cache-aside (читатель кладёт устаревшее между записью в БД и delete ключа), почему invalidate-on-write предпочтительнее update-on-write, TTL как страховку. Назовёт cache stampede при истечении горячего ключа и решения (single-flight/lock, probabilistic early expiration, stale-while-revalidate), negative caching, hot-key, разницу in-memory vs distributed (инвалидация по pub/sub), IMemoryCache/IDistributedCache/HybridCache (.NET 9 stampede protection). Middle ставит 'GetOrSet с TTL' и считает закрытым.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Горячий ключ курса валют, TTL 60с, 10k rps. В момент истечения TTL что с БД и почему? Как предотвратишь? Отдельно: при cache-aside какая гонка оставит устаревшее значение надолго, и поможет ли HybridCache?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Caching"
+        },
+        {
+          "source": "roadmap-csharp",
+          "topic": "Distributed Cache"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Memory Cache"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Distributed Cache"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Redis"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "Entity Framework 2nd Level Cache"
+        }
+      ]
+    },
+    {
+      "id": "api-design-versioning",
+      "title": "API Design & Versioning",
+      "layer": "Architecture & system design",
+      "description": "Контракты API и стратегии версионирования, breaking vs non-breaking, tolerant reader, expand-and-contract, версионирование событий в брокере, schema registry, Asp.Versioning, ловушки System.Text.Json.",
+      "prerequisites": [
+        "event-driven-messaging"
+      ],
+      "axes": [
+        "Architecture",
+        "Communication",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior мыслит совместимостью контракта а не 'добавим v2': различает breaking vs non-breaking (добавление optional безопасно, удаление/смена типа/ужесточение валидации — нет), знает tolerant reader/Postel's law, expand-and-contract (parallel change). Обсудит версионирование событий в брокере (forward/backward compatibility, старые консьюмеры), schema registry, почему URL-версии плодят форки, разную цену слома внутренних/публичных API, Asp.Versioning, опасность дефолтной сериализации (enum, JsonIgnoreCondition). Middle отвечает '/api/v2' и не думает о rolling-деплое со смешанными версиями.",
+      "mastery_focus": [
+        "depth",
+        "application",
+        "recognition"
+      ],
+      "example_probe": "Переименовать поле в JSON-контракте который читают 5 сервисов и мобильные клиенты, которые нельзя обновить разом — без даунтайма и без поломки старых. Что изменится если это событие в Kafka которое хранится и реплеится? Почему добавление required-поля breaking хотя 'я просто добавил поле'?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "REST"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "REST"
+        }
+      ]
+    },
+    {
+      "id": "deployment-rollout-migrations",
+      "title": "Deployment, Rollout & Zero-downtime Schema Migrations",
+      "layer": "Architecture & system design",
+      "description": "Blue-green/canary/rolling deploy, feature flags (деплой vs release), expand-and-contract схемы БД при одновременно работающих старой и новой версиях, опасность destructive DDL на больших таблицах.",
+      "prerequisites": [
+        "api-design-versioning",
+        "ef-migrations-production"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior проектирует деплой так что старая и новая версии работают одновременно (rolling/canary), и выводит правила миграций: expand-and-contract (добавить nullable, писать в обе, бэкфилл, переключить чтение, удалить — никогда destructive в одном релизе с кодом). Различает деплой (артефакт) и release (фича через feature flags), знает canary с метриками и rollback, blue-green и стоимость по БД, опасность долгих блокирующих DDL, idempotent/forward-only миграции. Middle делает 'rename column' одним шагом и роняет старые поды.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Разбить колонку full_name на first/last в таблице 200 млн строк, rolling deploy, нельзя ронять трафик. Распиши последовательность по схеме и коду так чтобы в каждый момент работали обе версии. Почему нельзя ALTER одним релизом и где место feature flag?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Configure deployment slots"
+        }
+      ]
+    },
+    {
+      "id": "scaling-partitioning-sharding",
+      "title": "Scaling, Partitioning & Sharding",
+      "layer": "Architecture & system design",
+      "description": "Горизонтальное масштабирование, statelessness, шардирование/партиционирование, выбор partition key, hot partition, cross-shard запросы, read-replica vs sharding, global ID (snowflake/ULID), consistent hashing.",
+      "prerequisites": [
+        "cqrs-read-write-separation",
+        "saga-outbox"
+      ],
+      "axes": [
+        "Architecture",
+        "Technical depth",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior различает вертикальное/горизонтальное и понимает что упирается всё в state (БД), не stateless-приложение. Выбирает partition key (равномерность vs локальность), видит hot partition и cross-shard джойны, обсуждает consistent hashing и rebalancing. Знает разницу read-replica (масштабирует чтение, replication lag) и шардирования (масштабирует запись), что глобальные ID (snowflake/ULID вместо автоинкремента) и распределённые транзакции становятся проблемой после шардирования. Middle 'добавим инстансов/реплик' без анализа bottleneck и ключа.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "БД платежей не тянет запись, реплики не спасают, шардируешь. По какому ключу шардируешь таблицу транзакций и почему именно по нему? Что сломается в отчётности и уникальности ID, как теперь генерировать ID, и как сделать 'все транзакции за период по всем клиентам' после шардирования?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Implement autoscaling"
+        }
+      ]
+    },
+    {
+      "id": "resilience-backpressure-degradation",
+      "title": "Resilience, Backpressure & Graceful Degradation (System-level)",
+      "layer": "Architecture & system design",
+      "description": "Системная устойчивость: каскадный отказ и его механика (исчерпание thread/connection pool), circuit breaker размещение, timeout на каждом уровне, bulkhead, load shedding, graceful degradation (stale-кэш вместо 500).",
+      "prerequisites": [
+        "caching-strategies-invalidation",
+        "scaling-partitioning-sharding",
+        "resilience-polly"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior проектирует на отказ на системном уровне: знает что наивные ретраи усиливают аварию, применяет backoff+jitter, retry budget, идемпотентность как предусловие. Объяснит точный механизм каскадного отказа (что исчерпалось — thread/connection pool), circuit breaker (closed/open/half-open) и где разместить, bulkhead-изоляцию пулов, timeout на каждом уровне (отсутствие → исчерпание пула → каскад), backpressure и load shedding (лучше отказать части), graceful degradation (stale-кэш). Реализационный Polly держит в resilience-polly. Middle добавляет 'retry 3 раза' без backoff и таймаутов.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "A синхронно зовёт B, B начал отвечать за 30с вместо 50мс, через минуту лежит весь A хотя B жив. Объясни точный механизм каскада (что исчерпалось) и какими приёмами на каких уровнях остановишь. Почему ретраи сделают хуже и где разместишь circuit breaker?"
+    },
+    {
+      "id": "observability-design",
+      "title": "Observability as a Design Requirement & SLOs",
+      "layer": "Architecture & system design",
+      "description": "Наблюдаемость как требование к дизайну распределёнки: что логировать на границах саги, как найти застрявшее сообщение, correlation через брокер и async-границы, три столпа, SLI/SLO/error budget, symptom-based alerting.",
+      "prerequisites": [
+        "resilience-backpressure-degradation",
+        "distributed-tracing-slo"
+      ],
+      "axes": [
+        "Production maturity",
+        "Architecture",
+        "Communication"
+      ],
+      "senior_signal": "Senior различает три столпа (logs/metrics/traces) и понимает что без correlation/trace context путь запроса в распределёнке не отладить. Мыслит наблюдаемость как требование к дизайну (что логировать на границах саги, как найти застрявшее сообщение), а не add-on. Мыслит SLI/SLO/error budget, RED/USE, отличает symptom-based alerting от шума. Конкретику OTel/Activity/propagation держит в distributed-tracing-slo. Middle 'добавит логов' без корреляции и алертит на CPU.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Клиент: 'оплата прошла, бонусы не начислились'. Запрос через 4 сервиса и брокер. Как за минуты найдёшь где потерялось и что для этого должно было быть заложено заранее? Почему обычные логи без correlation тут бесполезны?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Instrument an app or service to use Application Insights"
+        }
+      ]
+    },
+    {
+      "id": "distributed-auth-security",
+      "title": "Distributed AuthN/AuthZ & Service-to-Service Security",
+      "layer": "Architecture & system design",
+      "description": "Authn/authz в распределёнке: валидация токена на edge vs в каждом сервисе, token propagation/on-behalf-of, service-to-service auth (mTLS/client credentials), stateless JWT vs reference token, отзыв, defense in depth/zero trust.",
+      "prerequisites": [
+        "api-design-versioning",
+        "auth-authn-authz"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity",
+        "Technical depth"
+      ],
+      "senior_signal": "Senior понимает размещение authn/authz в распределёнке: валидация токена на edge (gateway) vs в каждом сервисе, проброс identity (token propagation, on-behalf-of), service-to-service auth (mTLS, client credentials). Объяснит trade-off stateless JWT (нельзя мгновенно отозвать → короткий TTL+refresh или introspection) vs reference token. Назовёт опасности: доверие токену без проверки подписи/audience, авторизация только на gateway при доступной внутренней сети (нужен defense in depth/zero trust), утечка PII в логи/трейсы. Middle проверяет 'залогинен ли' на входе и дальше доверяет всему.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Запрос от мобильного через gateway в 3 сервиса, один зовёт внешний банк. Где валидируются токены, как identity доходит до 3-го сервиса, как 3-й аутентифицируется перед банком? Пользователя надо немедленно разлогинить везде — почему с JWT нетривиально и что сделаешь?",
+      "provenance": [
+        {
+          "source": "az204",
+          "topic": "Authenticate and authorize users by using the Microsoft Identity platform"
+        },
+        {
+          "source": "az204",
+          "topic": "Authenticate and authorize users and apps by using Microsoft Entra ID"
+        },
+        {
+          "source": "az204",
+          "topic": "Implement Managed Identities for Azure resources"
+        }
+      ]
+    },
+    {
+      "id": "tradeoff-reasoning-capacity",
+      "title": "Trade-off Reasoning & Capacity Under Load",
+      "layer": "Architecture & system design",
+      "description": "Обоснование решений через явные trade-offs, back-of-the-envelope расчёты (throughput/latency/capacity/партиции), CAP/PACELC на практике, явная формулировка чем жертвуем и где НЕ вводим сложность.",
+      "prerequisites": [
+        "resilience-backpressure-degradation",
+        "observability-design",
+        "distributed-auth-security"
+      ],
+      "axes": [
+        "Architecture",
+        "Communication",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior не называет 'правильный' паттерн, а вскрывает trade-off и привязывает к требованиям: CAP/PACELC на практике (что жертвуем при partition и что при её отсутствии — latency vs consistency), цена strong vs eventual, sync vs async. Делает back-of-the-envelope: из tps и размера записи прикидывает QPS, объём, число партиций, p99, проверяет реалистичность. Явно проговаривает что НЕ будет делать и почему (YAGNI, цена эксплуатации). Middle даёт паттерн как догму без чисел и компромисса.",
+      "mastery_focus": [
+        "depth",
+        "application"
+      ],
+      "example_probe": "Платёжная система 10k tps в пике, деньги не теряются/не дублируются, p99<200мс. Прикинь на салфетке нагрузку на БД и брокер, обоснуй где strong а где eventual consistency, назови чем сознательно пожертвовал ради чего. Где НЕ стал бы вводить микросервис/CQRS/event sourcing и почему?"
+    },
+    {
+      "id": "micro-orm-dapper-tradeoffs",
+      "title": "Micro-ORMs (Dapper) & EF-vs-Dapper Trade-offs",
+      "layer": "EF Core",
+      "description": "Осознанный выбор микро-ORM (Dapper) вместо EF Core на горячих read-путях: ручное управление жизненным циклом соединения/транзакции, маппинг, защита от SQL-инъекций в сыром SQL и обоснование trade-off EF vs Dapper.",
+      "prerequisites": [
+        "ef-query-translation-client-eval",
+        "ef-raw-sql-injection",
+        "ef-no-tracking-projections",
+        "ef-dbcontext-lifetime-pooling"
+      ],
+      "axes": [
+        "Technical depth",
+        "Production maturity",
+        "Communication"
+      ],
+      "senior_signal": "Senior обосновывает выбор инструмента под нагрузку, а не по привычке: Dapper выигрывает на read-heavy горячих путях (нет change tracking, identity map, построения дерева запроса и материализации в трекаемые сущности — меньше аллокаций и CPU), EF выигрывает на доменной логике с графами и юнитом работы. Объяснит ручное владение IDbConnection/транзакцией (открытие/закрытие, пул соединений ADO.NET, явный scope транзакции вместо SaveChanges), параметризацию (Dapper кэширует и параметризует — но конкатенация строк всё равно открывает инъекцию), множественные result set (QueryMultiple), multi-mapping и splitOn, мисматч типов и буферизацию vs стриминг (buffered:false). Назовёт гибрид (EF для записи/домена, Dapper для отчётных проекций в одной транзакции/соединении) и цену двух data-access стеков. Middle тащит один ORM везде и не аргументирует выбор.",
+      "mastery_focus": [
+        "recognition",
+        "application",
+        "depth"
+      ],
+      "example_probe": "Эндпоинт-отчёт делает 12 джойнов и отдаёт 50k строк, EF-проекция упирается в CPU и аллокации на материализации. Когда и почему перейдёшь на Dapper, что именно перестанет тратиться? Как разделишь соединение/транзакцию между EF-записью и Dapper-чтением в одном бизнес-сценарии и где здесь риск инъекции, если 'я же через Dapper'?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "Dapper"
+        }
+      ],
+      "grounded_new": true
+    },
+    {
+      "id": "graphql-dotnet-dataloader",
+      "title": "GraphQL in .NET: DataLoader Batching, Query Cost & Schema Evolution",
+      "layer": "ASP.NET Core",
+      "description": "Senior-аспекты GraphQL в .NET (HotChocolate): N+1 через DataLoader-батчинг, ограничение глубины/стоимости запроса для защиты от DoS, проекция резолверов в SQL и эволюция схемы без слома клиентов.",
+      "prerequisites": [
+        "ef-n-plus-one-loading",
+        "ef-no-tracking-projections",
+        "api-design-versioning",
+        "rate-limiting-middleware"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior центрирует разговор на проблемах производительности и безопасности, а не на написании резолверов: N+1 в GraphQL принципиально хуже REST (клиент сам строит граф выборки) и решается DataLoader-батчингом (per-request кэш, объединение ключей в один запрос) и/или проекцией резолверов в IQueryable. Объяснит query depth/complexity/node limits и persisted queries как защиту от DoS (один глубокий вложенный запрос кладёт БД), cost analysis, отличие over-fetching REST от управляемого клиентом фетча. Разберёт эволюцию схемы (добавление поля безопасно, удаление/смена типа — breaking; @deprecated; nullability как контракт) и почему versioning в GraphQL делают эволюцией схемы, а не /v2. Сравнит GraphQL vs REST vs gRPC по сценарию. Middle пишет резолверы и ловит N+1 в проде.",
+      "mastery_focus": [
+        "recognition",
+        "application",
+        "depth"
+      ],
+      "example_probe": "GraphQL-запрос { orders { customer { orders { items } } } } валит БД сотнями запросов. Объясни почему DataLoader это чинит и чем он отличается от простого кэша, и почему projection-резолвер может убрать проблему иначе. Как не дать клиенту положить сервис вложенным запросом глубины 20, и почему здесь не спасает обычный rate limiting по числу HTTP-запросов?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "GraphQL"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "GraphQL"
+        }
+      ],
+      "grounded_new": true
+    },
+    {
+      "id": "grpc-contracts-streaming",
+      "title": "gRPC: Contracts, Streaming & HTTP/2 Transport Semantics",
+      "layer": "ASP.NET Core",
+      "description": "gRPC для service-to-service: семантика HTTP/2-мультиплексирования, четыре режима стриминга, эволюция Protobuf-контрактов и обратная совместимость, проброс deadline/cancellation и trade-off gRPC vs REST.",
+      "prerequisites": [
+        "cancellation-tokens",
+        "api-design-versioning",
+        "httpclientfactory-typed-clients",
+        "channels-backpressure"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior рассуждает о транспорте и контракте, а не вызывает сгенерированный клиент: HTTP/2-мультиплексирование (много RPC по одному соединению, нет head-of-line на уровне запросов, но есть на уровне TCP), четыре режима (unary/server/client/bidi streaming) и когда стриминг уместен. Объяснит эволюцию Protobuf: добавление поля с новым номером безопасно, переиспользование/смена номера или типа — breaking, reserved для удалённых, почему нет required, дефолты вместо null. Разберёт deadline propagation (клиент задаёт deadline, сервер видит и пробрасывает дальше, отмена течёт по цепочке через CancellationToken), коды статусов vs HTTP, gRPC vs REST/JSON (бинарный контракт, codegen, строгая типизация, но хуже для браузера/публичного API → gRPC-Web/transcoding), backpressure в bidi-стриме. Middle подключает сгенерированный клиент и не думает про versioning номеров полей.",
+      "mastery_focus": [
+        "recognition",
+        "application",
+        "depth"
+      ],
+      "example_probe": "Сервис A зовёт B по gRPC, B зовёт C, у запроса бюджет 200мс. Как deadline и отмена дойдут до C и что произойдёт с in-flight RPC при истечении? В Protobuf нужно удалить поле и добавить другое — как сделать, чтобы старые и новые бинарники жили вместе при rolling-деплое, и почему смена номера/типа поля это тихий breaking?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "gRPC"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "gRPC"
+        }
+      ],
+      "grounded_new": true
+    },
+    {
+      "id": "signalr-scaleout-backplane",
+      "title": "SignalR & WebSockets: Scale-out, Backplane & Connection Lifetime",
+      "layer": "ASP.NET Core",
+      "description": "Real-time на масштабе через SignalR/WebSockets: scale-out с backplane (Redis/Azure SignalR), жизненный цикл и липкость соединения, backpressure на хабах, семантика реконнекта и идемпотентность сообщений.",
+      "prerequisites": [
+        "kestrel-config-hosting-model",
+        "channels-backpressure",
+        "scaling-partitioning-sharding",
+        "idempotency-deduplication"
+      ],
+      "axes": [
+        "Technical depth",
+        "Architecture",
+        "Production maturity"
+      ],
+      "senior_signal": "Senior проектирует персистентные соединения на несколько инстансов, а не один хаб: проблема fan-out при scale-out (клиент на инстансе 1, broadcast инициирован на инстансе 2 → нужен backplane Redis/Azure SignalR или sticky sessions при negotiate), почему long-polling/SSE-фолбэк требует affinity. Объяснит жизненный цикл соединения (negotiate, transport upgrade, OnConnected/OnDisconnected, mapping user→connectionIds), backpressure (медленный клиент копит буфер на сервере → нужны лимиты/выброс), реконнект и недоставленные сообщения (at-least-once при ретрансляции → идемпотентность/sequence на клиенте, не 'просто пошлём ещё раз'), сколько соединений на инстанс держит память/порты. Middle добавляет хаб и тестит на одном инстансе.",
+      "mastery_focus": [
+        "recognition",
+        "application",
+        "depth"
+      ],
+      "example_probe": "Чат на 100k одновременных соединений за load balancer на 10 инстансах. Пользователь А (инстанс 3) шлёт сообщение в комнату, где половина участников на других инстансах — как доставка дойдёт до всех и зачем тут backplane? Что произойдёт при кратком разрыве сети клиента и почему наивный 'дошлём при reconnect' даёт дубли?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "SignalR Core"
+        },
+        {
+          "source": "roadmap-aspnet",
+          "topic": "SignalR Core"
+        }
+      ],
+      "grounded_new": true
+    },
+    {
+      "id": "api-gateway-reverse-proxy",
+      "title": "API Gateway & Reverse Proxy (YARP/Ocelot) Patterns",
+      "layer": "Architecture & system design",
+      "description": "Проектирование edge-границы: маршрутизация и агрегация на gateway, offload аутентификации, размещение rate-limit/retry на краю vs в сервисе (YARP/Ocelot/APIM), управление контрактами и доступом на уровне шлюза.",
+      "prerequisites": [
+        "distributed-auth-security",
+        "api-design-versioning",
+        "rate-limiting-middleware",
+        "service-boundaries-decomposition",
+        "resilience-backpressure-degradation"
+      ],
+      "axes": [
+        "Architecture",
+        "Production maturity",
+        "Communication"
+      ],
+      "senior_signal": "Senior владеет топологией края как архитектурным решением, отличая её от in-process middleware: gateway/reverse proxy (YARP, Ocelot, APIM) делает маршрутизацию, агрегацию (BFF), TLS-терминацию, offload authn (валидация токена один раз на краю) — но senior сразу добавляет defense in depth (внутри сети нельзя доверять только gateway). Объяснит где ставить cross-cutting: rate limiting и coarse-grained retry уместны на краю, но retry на неидемпотентных и бизнес-авторизация — нет; почему агрегация на gateway создаёт связность и единую точку отказа; versioning/deprecation и governance контрактов как функцию шлюза; разницу gateway-per-client (BFF) vs единый. Middle редко владеет edge-топологией и считает gateway 'ещё одним middleware'.",
+      "mastery_focus": [
+        "recognition",
+        "application",
+        "depth"
+      ],
+      "example_probe": "10 внутренних сервисов и мобильный/web клиент. Что вынесешь на gateway, а что оставишь в сервисах, и почему authn на краю не отменяет проверки внутри? Где разместишь rate limiting и retry, чтобы не усилить отказ и не ретраить неидемпотентное? Чем агрегирующий BFF-шлюз рискует по сравнению с тонким reverse proxy?",
+      "provenance": [
+        {
+          "source": "roadmap-csharp",
+          "topic": "API Gateway - Ocelot"
+        },
+        {
+          "source": "az204",
+          "topic": "Create document APIs / Configure access to APIs (API Management)"
+        }
+      ],
+      "grounded_new": true
+    }
+  ],
+  "axis_coverage": [
+    {
+      "axis": "Technical depth",
+      "count": 80
+    },
+    {
+      "axis": "Production maturity",
+      "count": 76
+    },
+    {
+      "axis": "Architecture",
+      "count": 59
+    },
+    {
+      "axis": "Communication",
+      "count": 13
+    }
+  ],
+  "grounding": {
+    "sources": [
+      {
+        "source": "roadmap-csharp",
+        "name": "roadmap.sh — C#",
+        "covered": 40,
+        "missing": 5,
+        "out_of_scope": 93
+      },
+      {
+        "source": "roadmap-aspnet",
+        "name": "roadmap.sh — ASP.NET Core",
+        "covered": 39,
+        "missing": 4,
+        "out_of_scope": 95
+      },
+      {
+        "source": "mslearn-dotnet",
+        "name": "Microsoft Learn — .NET paths",
+        "covered": 7,
+        "missing": 0,
+        "out_of_scope": 26
+      },
+      {
+        "source": "az204",
+        "name": "AZ-204 (Azure) — skills measured",
+        "covered": 19,
+        "missing": 2,
+        "out_of_scope": 18
+      }
+    ],
+    "new_nodes_added": [
+      "micro-orm-dapper-tradeoffs",
+      "graphql-dotnet-dataloader",
+      "grpc-contracts-streaming",
+      "signalr-scaleout-backplane",
+      "api-gateway-reverse-proxy"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Pure domain: entities and enums. No external package or project references. -->
+
+</Project>

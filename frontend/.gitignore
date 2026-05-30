@@ -1,0 +1,3 @@
+node_modules/
+dist/
+# Built SPA is emitted into the API's wwwroot (generated, not committed).

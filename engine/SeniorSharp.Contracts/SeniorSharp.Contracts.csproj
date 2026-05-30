@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Prompt DTOs + JSON schema constants. No external package or project references. -->
+
+</Project>
