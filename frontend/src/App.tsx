@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
 import { api, type Verdict } from './api'
 import { LANGUAGES } from './languages'
 
@@ -207,7 +208,7 @@ export function App() {
                 <div className="text">{m.text}</div>
               </div>
             ))}
-            {busy && <div className="msg interviewer"><div className="who">Interviewer</div><div className="text">…</div></div>}
+            {busy && <div className="msg interviewer"><div className="who">Interviewer</div><div className="text"><span className="typing"><span></span><span></span><span></span></span></div></div>}
           </div>
           {turnError && <div className="turn-error">{turnError}</div>}
           {finished ? (
@@ -234,7 +235,7 @@ export function App() {
         <div className="card verdict">
           <h2>Verdict: <span className="level">{verdict.overallLevel}</span></h2>
           <p className="meta">{verdict.runCount} scoring run(s) · spread {verdict.spread.toFixed(3)}</p>
-          <p className="summary">{verdict.summary}</p>
+          <div className="summary"><ReactMarkdown>{verdict.summary}</ReactMarkdown></div>
           <table>
             <thead><tr><th>Axis</th><th>Level</th><th>Score</th></tr></thead>
             <tbody>
@@ -248,7 +249,7 @@ export function App() {
             {verdict.axes.map(a => (
               <div key={a.axis} className="axis-detail">
                 <strong>{a.axis}</strong>
-                <p>{a.rationale}</p>
+                <div className="rationale"><ReactMarkdown>{a.rationale}</ReactMarkdown></div>
                 {a.citations.length > 0 && <ul>{a.citations.map((c, i) => <li key={i}>{c}</li>)}</ul>}
               </div>
             ))}
