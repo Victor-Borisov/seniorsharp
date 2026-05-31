@@ -5,6 +5,18 @@ import { LANGUAGES } from './languages'
 type Phase = 'start' | 'interview' | 'verdict' | 'error'
 interface Msg { role: 'interviewer' | 'candidate'; text: string }
 
+// Tiny silent WAV used to "unlock" audio playback within the Start click (browsers block autoplay
+// that isn't tied to a user gesture). Once played via a gesture, the element may play later too.
+const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+
+// Turn a raw fetch/HTTP error into a short, reassuring message — the interview is never lost on a turn error.
+function humanError(e: unknown): string {
+  const s = String(e)
+  if (/\b5\d\d\b/.test(s)) return 'The server hit a temporary error (the AI took too long). Your interview is safe — press Send to try again.'
+  if (/Failed to fetch|NetworkError|ERR_NETWORK/i.test(s)) return 'Network problem — check your connection and press Send to retry.'
+  return s
+}
+
 const FLOW = ['Discovery', 'Deep-dive', 'System design', 'Scoring', 'Verdict']
 const AXES: [string, string][] = [
   ['Technical depth', 'Internals, mechanisms, failure modes — explained unprompted.'],
@@ -22,25 +34,42 @@ export function App() {
   const [pendingQuestion, setPendingQuestion] = useState('')
   const [answer, setAnswer] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState('')          // fatal start error -> full error page
+  const [turnError, setTurnError] = useState('')  // recoverable mid-interview error -> inline banner
+  const [finished, setFinished] = useState(false) // interview complete but verdict not yet loaded
   const [verdict, setVerdict] = useState<Verdict | null>(null)
 
   const [speak, setSpeak] = useState(true)
+  const [audioBlocked, setAudioBlocked] = useState(false)
   const [recording, setRecording] = useState(false)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  const audioRef = useRef<HTMLAudioElement | null>(null)
 
+  // Speak a question through the single (gesture-unlocked) audio element.
+  async function playText(text: string) {
+    const a = audioRef.current
+    if (!a) return
+    try {
+      const blob = await api.synthesize(text)
+      a.src = URL.createObjectURL(blob)
+      await a.play()
+      setAudioBlocked(false)
+    } catch {
+      setAudioBlocked(true) // autoplay blocked — user can tap 🔊 to hear
+    }
+  }
+
+  // Auto-read each new interviewer question when voice is on.
   useEffect(() => {
-    if (!speak || !pendingQuestion) return
-    let url = ''
-    api.synthesize(pendingQuestion)
-      .then(blob => { url = URL.createObjectURL(blob); void new Audio(url).play() })
-      .catch(() => { /* best-effort */ })
-    return () => { if (url) URL.revokeObjectURL(url) }
+    if (speak && pendingQuestion) void playText(pendingQuestion)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingQuestion, speak])
 
   async function start() {
-    setBusy(true); setError('')
+    // Unlock audio within this click so later question playback isn't blocked by autoplay policy.
+    if (speak && audioRef.current) { audioRef.current.src = SILENCE; audioRef.current.play().catch(() => {}) }
+    setBusy(true); setError(''); setTurnError(''); setFinished(false); setMessages([]); setVerdict(null)
     try {
       const r = await api.start(name.trim() || null, language)
       setSessionId(r.sessionId)
@@ -53,15 +82,33 @@ export function App() {
   async function submit() {
     const a = answer.trim()
     if (!a || busy) return
-    setBusy(true); setError('')
+    setBusy(true); setTurnError('')
     setMessages(m => [...m, { role: 'candidate', text: a }])
     setAnswer('')
     try {
       const r = await api.turn(sessionId, a)
       setMessages(m => [...m, { role: 'interviewer', text: r.utterance }])
       setPendingQuestion(r.utterance)
-      if (r.isComplete) { setVerdict(await api.verdict(sessionId)); setPhase('verdict') }
-    } catch (e) { setError(String(e)); setPhase('error') } finally { setBusy(false) }
+      if (r.isComplete) {
+        // The turn went through; only the verdict fetch is left. Keep it on its own path so a
+        // verdict error doesn't roll back the (already accepted) answer.
+        try { setVerdict(await api.verdict(sessionId)); setPhase('verdict') }
+        catch { setFinished(true); setTurnError('Interview complete — the verdict didn’t load. Tap “Show verdict” to retry.') }
+      }
+    } catch (e) {
+      // Recoverable: the failed turn was not persisted on the server. Drop the unsent bubble, put the
+      // answer back in the box, and let the candidate retry — the interview is not lost.
+      setMessages(m => m.slice(0, -1))
+      setAnswer(a)
+      setTurnError(humanError(e))
+    } finally { setBusy(false) }
+  }
+
+  async function showVerdict() {
+    setBusy(true); setTurnError('')
+    try { setVerdict(await api.verdict(sessionId)); setPhase('verdict') }
+    catch (e) { setTurnError('Still couldn’t load the verdict. ' + humanError(e)) }
+    finally { setBusy(false) }
   }
 
   async function toggleRecord() {
@@ -77,14 +124,15 @@ export function App() {
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' })
         setBusy(true)
         try { const text = await api.transcribe(blob); setAnswer(p => (p ? p + ' ' : '') + text) }
-        catch (e) { setError(String(e)) } finally { setBusy(false) }
+        catch (e) { setTurnError('Could not transcribe the recording. ' + humanError(e)) } finally { setBusy(false) }
       }
       mr.start(); recorderRef.current = mr; setRecording(true)
-    } catch (e) { setError('Microphone unavailable: ' + String(e)) }
+    } catch (e) { setTurnError('Microphone unavailable: ' + String(e)) }
   }
 
   return (
     <div className="app">
+      <audio ref={audioRef} hidden />
       <header><h1>SeniorSharp</h1><span className="tag">AI Senior .NET interview</span></header>
 
       {phase === 'start' && (
@@ -136,27 +184,40 @@ export function App() {
         <div className="card chat">
           <div className="bar">
             <label className="row"><input type="checkbox" checked={speak} onChange={e => setSpeak(e.target.checked)} /> 🔊 Speak questions</label>
+            {audioBlocked && <span className="muted">Autoplay blocked — tap 🔊 on a question to hear it.</span>}
           </div>
           <div className="messages">
             {messages.map((m, i) => (
               <div key={i} className={`msg ${m.role}`}>
-                <div className="who">{m.role === 'interviewer' ? 'Interviewer' : 'You'}</div>
+                <div className="who">
+                  {m.role === 'interviewer' ? 'Interviewer' : 'You'}
+                  {m.role === 'interviewer' && (
+                    <button className="speak-btn" title="Play question" onClick={() => playText(m.text)}>🔊</button>
+                  )}
+                </div>
                 <div className="text">{m.text}</div>
               </div>
             ))}
             {busy && <div className="msg interviewer"><div className="who">Interviewer</div><div className="text">…</div></div>}
           </div>
-          <div className="composer">
-            <button className={`mic${recording ? ' rec' : ''}`} onClick={toggleRecord} disabled={busy && !recording} title="Speak your answer">{recording ? '⏺ Stop' : '🎤 Speak'}</button>
-            <textarea
-              value={answer}
-              onChange={e => setAnswer(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit() }}
-              placeholder="Type your answer, or press 🎤 to speak (Ctrl+Enter to send)…"
-              disabled={busy}
-            />
-            <button onClick={submit} disabled={busy || !answer.trim()}>Send</button>
-          </div>
+          {turnError && <div className="turn-error">{turnError}</div>}
+          {finished ? (
+            <div className="composer">
+              <button onClick={showVerdict} disabled={busy}>Show verdict</button>
+            </div>
+          ) : (
+            <div className="composer">
+              <button className={`mic${recording ? ' rec' : ''}`} onClick={toggleRecord} disabled={busy && !recording} title="Speak your answer">{recording ? '⏺ Stop' : '🎤 Speak'}</button>
+              <textarea
+                value={answer}
+                onChange={e => { setAnswer(e.target.value); if (turnError) setTurnError('') }}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit() }}
+                placeholder="Type your answer, or press 🎤 to speak (Ctrl+Enter to send)…"
+                disabled={busy}
+              />
+              <button onClick={submit} disabled={busy || !answer.trim()}>Send</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -183,7 +244,7 @@ export function App() {
               </div>
             ))}
           </details>
-          <button onClick={() => { setPhase('start'); setMessages([]); setVerdict(null) }}>New interview</button>
+          <button onClick={() => { setPhase('start'); setMessages([]); setVerdict(null); setFinished(false); setTurnError('') }}>New interview</button>
         </div>
       )}
 

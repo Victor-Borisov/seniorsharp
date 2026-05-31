@@ -26,12 +26,16 @@ public static class ServiceCollectionExtensions
         {
             var options = sp.GetRequiredService<IOptions<AnthropicOptions>>().Value;
 
-            // An explicit key from configuration (.env / user-secrets / appsettings) wins. When it is
-            // empty the official SDK falls back to the ANTHROPIC_API_KEY environment variable on its own,
-            // so a plain `new AnthropicClient()` still works in that case.
-            return string.IsNullOrWhiteSpace(options.ApiKey)
-                ? new AnthropicClient()
-                : new AnthropicClient(new ClientOptions { APIKey = options.ApiKey });
+            // Raise the HTTP timeout well above the SDK default (100s): large structured calls — especially
+            // the scorer over a full transcript — can take longer and would otherwise be cancelled -> 500.
+            var clientOptions = new ClientOptions { Timeout = TimeSpan.FromMinutes(5) };
+
+            // An explicit key from configuration (.env / user-secrets / appsettings) wins; when empty the
+            // SDK falls back to the ANTHROPIC_API_KEY environment variable on its own.
+            if (!string.IsNullOrWhiteSpace(options.ApiKey))
+                clientOptions.APIKey = options.ApiKey;
+
+            return new AnthropicClient(clientOptions);
         });
 
         services.AddSingleton<ILlmClient, AnthropicLlmClient>();
