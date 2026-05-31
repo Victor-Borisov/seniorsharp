@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 using Anthropic;
 using Anthropic.Core;
 using Microsoft.Extensions.Configuration;
@@ -28,7 +29,12 @@ public static class ServiceCollectionExtensions
 
             // Raise the HTTP timeout well above the SDK default (100s): large structured calls — especially
             // the scorer over a full transcript — can take longer and would otherwise be cancelled -> 500.
-            var clientOptions = new ClientOptions { Timeout = TimeSpan.FromMinutes(5) };
+            // ClientOptions.Timeout alone is not honoured by the underlying HttpClient, so supply our own.
+            var clientOptions = new ClientOptions
+            {
+                Timeout = TimeSpan.FromMinutes(5),
+                HttpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) },
+            };
 
             // An explicit key from configuration (.env / user-secrets / appsettings) wins; when empty the
             // SDK falls back to the ANTHROPIC_API_KEY environment variable on its own.

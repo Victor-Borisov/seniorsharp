@@ -46,17 +46,26 @@ export function App() {
   const chunksRef = useRef<Blob[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  // Speak a question through the single (gesture-unlocked) audio element.
-  async function playText(text: string) {
+  // Speak a question through the single (gesture-unlocked) audio element. `fromGesture` is true when the
+  // call comes from a click (🔊) — a real failure there is a genuine problem, not browser autoplay policy.
+  async function playText(text: string, fromGesture = false) {
     const a = audioRef.current
-    if (!a) return
+    if (!a) { setTurnError('Audio element is not ready — please reload the page.'); return }
     try {
       const blob = await api.synthesize(text)
+      if (a.src.startsWith('blob:')) URL.revokeObjectURL(a.src)
       a.src = URL.createObjectURL(blob)
+      a.muted = false; a.volume = 1
       await a.play()
       setAudioBlocked(false)
-    } catch {
-      setAudioBlocked(true) // autoplay blocked — user can tap 🔊 to hear
+    } catch (e) {
+      const name = (e as { name?: string })?.name
+      if (name === 'NotAllowedError' && !fromGesture) {
+        setAudioBlocked(true) // autoplay blocked by the browser — user can tap 🔊 to hear
+      } else {
+        // Surface the real reason instead of swallowing it, so failures are diagnosable.
+        setTurnError('Could not play the question audio: ' + ((e as { message?: string })?.message || name || String(e)))
+      }
     }
   }
 
@@ -192,7 +201,7 @@ export function App() {
                 <div className="who">
                   {m.role === 'interviewer' ? 'Interviewer' : 'You'}
                   {m.role === 'interviewer' && (
-                    <button className="speak-btn" title="Play question" onClick={() => playText(m.text)}>🔊</button>
+                    <button className="speak-btn" title="Play question" onClick={() => playText(m.text, true)}>🔊</button>
                   )}
                 </div>
                 <div className="text">{m.text}</div>
