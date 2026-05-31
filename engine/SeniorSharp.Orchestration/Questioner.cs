@@ -45,6 +45,10 @@ public sealed class Questioner : IQuestioner
                 $"## Questions left in budget\n\n{request.BudgetLeft}"),
         };
 
+        if (!string.IsNullOrEmpty(request.Language))
+            messages.Add(new ChatMessage(ChatRole.System,
+                $"Phrase the question (questionText) in {request.Language}. Keep node ids and the axis name as-is."));
+
         _logger.LogInformation("Selecting next question (budget left {Budget}, {Asked} asked).",
             request.BudgetLeft, request.AskedNodeIds.Length);
 

@@ -438,7 +438,7 @@ app.MapPost("/voice/sessions", async (
         IVoiceInterview voice,
         CancellationToken ct) =>
     {
-        var r = await voice.StartAsync(body.CandidateRef, ct);
+        var r = await voice.StartAsync(body.CandidateRef, body.Language, ct);
         return Results.Created($"/voice/sessions/{r.SessionId}",
             new VoiceTurnResponse(r.SessionId, r.Utterance, IsComplete: false));
     })

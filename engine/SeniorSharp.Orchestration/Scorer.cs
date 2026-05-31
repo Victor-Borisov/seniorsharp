@@ -43,6 +43,10 @@ public sealed class Scorer : IScorer
             new(ChatRole.User, $"## Interview transcript\n\n{request.TranscriptJson}"),
         };
 
+        if (!string.IsNullOrEmpty(request.Language))
+            messages.Add(new ChatMessage(ChatRole.System,
+                $"Write the rationale and summary in {request.Language}. Keep axis names, levels and citations as-is."));
+
         _logger.LogInformation("Scoring transcript over {AxisCount} axes ({Axes}).", request.Axes.Length, axes);
 
         return await _llm.CompleteStructuredAsync<ScorerResponse>(

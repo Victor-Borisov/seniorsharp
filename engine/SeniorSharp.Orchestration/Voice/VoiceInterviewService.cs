@@ -25,9 +25,9 @@ public sealed class VoiceInterviewService : IVoiceInterview
         _logger = logger;
     }
 
-    public async Task<VoiceStartResult> StartAsync(string? candidateRef, CancellationToken ct = default)
+    public async Task<VoiceStartResult> StartAsync(string? candidateRef, string? language = null, CancellationToken ct = default)
     {
-        var start = await _orchestrator.StartAsync(new StartInterviewRequest(candidateRef), ct);
+        var start = await _orchestrator.StartAsync(new StartInterviewRequest(candidateRef, Language: language), ct);
         return new VoiceStartResult(start.SessionId, start.FirstQuestion);
     }
 

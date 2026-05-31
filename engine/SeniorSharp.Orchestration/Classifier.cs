@@ -43,6 +43,10 @@ public sealed class Classifier : IClassifier
                 $"## Prior mastery (for calibration)\n\n{request.MasteryStateJson}"),
         };
 
+        if (!string.IsNullOrEmpty(request.Language))
+            messages.Add(new ChatMessage(ChatRole.System,
+                $"Write any prose in {request.Language}. The evidenceQuote must stay verbatim from the answer."));
+
         _logger.LogInformation("Classifying answer ({Length} chars).", request.CandidateAnswer.Length);
 
         return await _llm.CompleteStructuredAsync<ClassifierResponse>(

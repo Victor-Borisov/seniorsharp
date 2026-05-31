@@ -18,6 +18,7 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
         builder.Property(x => x.GraphVersion).HasMaxLength(64);
         builder.Property(x => x.PromptVersion).HasMaxLength(64);
         builder.Property(x => x.ModelId).HasMaxLength(128);
+        builder.Property(x => x.Language).HasMaxLength(16);
 
         builder.HasMany(x => x.Rounds)
             .WithOne()

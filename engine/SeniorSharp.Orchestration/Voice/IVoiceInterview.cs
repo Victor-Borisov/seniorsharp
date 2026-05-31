@@ -13,8 +13,8 @@ namespace SeniorSharp.Orchestration;
 /// </summary>
 public interface IVoiceInterview
 {
-    /// <summary>Starts a session and returns the first utterance to speak.</summary>
-    Task<VoiceStartResult> StartAsync(string? candidateRef, CancellationToken ct = default);
+    /// <summary>Starts a session (in the given language locale) and returns the first utterance to speak.</summary>
+    Task<VoiceStartResult> StartAsync(string? candidateRef, string? language = null, CancellationToken ct = default);
 
     /// <summary>
     /// Records the candidate's (transcribed) utterance and returns the next utterance to speak, advancing

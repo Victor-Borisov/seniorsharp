@@ -29,8 +29,8 @@ public sealed record AnswerResponse(
     string? NextQuestion,
     bool RoundComplete);
 
-/// <summary>Body for POST /voice/sessions (managed voice provider starts a call).</summary>
-public sealed record VoiceStartBody(string? CandidateRef);
+/// <summary>Body for POST /voice/sessions (starts an interview; Language is a locale code, e.g. "en", "ru").</summary>
+public sealed record VoiceStartBody(string? CandidateRef, string? Language = null);
 
 /// <summary>Body for POST /voice/sessions/{id}/turn (a transcribed candidate utterance).</summary>
 public sealed record VoiceTurnBody(string Utterance);

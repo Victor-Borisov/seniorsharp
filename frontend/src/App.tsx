@@ -1,13 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, setInviteCode, type Verdict } from './api'
+import { api, type Verdict } from './api'
+import { LANGUAGES } from './languages'
 
 type Phase = 'start' | 'interview' | 'verdict' | 'error'
 interface Msg { role: 'interviewer' | 'candidate'; text: string }
 
+const FLOW = ['Discovery', 'Deep-dive', 'System design', 'Scoring', 'Verdict']
+const AXES: [string, string][] = [
+  ['Technical depth', 'Internals, mechanisms, failure modes — explained unprompted.'],
+  ['Architecture', 'Boundaries, trade-offs and consistency, reasoned from requirements.'],
+  ['Production maturity', 'Diagnosing live systems, observability, resilience.'],
+  ['Communication', 'Structured reasoning, explicit assumptions, clear recommendations.'],
+]
+
 export function App() {
   const [phase, setPhase] = useState<Phase>('start')
   const [name, setName] = useState('')
-  const [code, setCode] = useState('')
+  const [language, setLanguage] = useState('en')
   const [sessionId, setSessionId] = useState('')
   const [messages, setMessages] = useState<Msg[]>([])
   const [pendingQuestion, setPendingQuestion] = useState('')
@@ -16,27 +25,24 @@ export function App() {
   const [error, setError] = useState('')
   const [verdict, setVerdict] = useState<Verdict | null>(null)
 
-  // Voice mode
-  const [speak, setSpeak] = useState(true)        // auto-read interviewer questions aloud
+  const [speak, setSpeak] = useState(true)
   const [recording, setRecording] = useState(false)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
 
-  // Speak each new interviewer question when voice is on.
   useEffect(() => {
     if (!speak || !pendingQuestion) return
     let url = ''
     api.synthesize(pendingQuestion)
       .then(blob => { url = URL.createObjectURL(blob); void new Audio(url).play() })
-      .catch(() => { /* TTS is best-effort */ })
+      .catch(() => { /* best-effort */ })
     return () => { if (url) URL.revokeObjectURL(url) }
   }, [pendingQuestion, speak])
 
   async function start() {
     setBusy(true); setError('')
     try {
-      setInviteCode(code.trim())
-      const r = await api.start(name.trim() || null)
+      const r = await api.start(name.trim() || null, language)
       setSessionId(r.sessionId)
       setMessages([{ role: 'interviewer', text: r.utterance }])
       setPendingQuestion(r.utterance)
@@ -54,15 +60,10 @@ export function App() {
       const r = await api.turn(sessionId, a)
       setMessages(m => [...m, { role: 'interviewer', text: r.utterance }])
       setPendingQuestion(r.utterance)
-      if (r.isComplete) {
-        const v = await api.verdict(sessionId)
-        setVerdict(v)
-        setPhase('verdict')
-      }
+      if (r.isComplete) { setVerdict(await api.verdict(sessionId)); setPhase('verdict') }
     } catch (e) { setError(String(e)); setPhase('error') } finally { setBusy(false) }
   }
 
-  // Press to start/stop recording; on stop, transcribe and drop the text into the answer box.
   async function toggleRecord() {
     if (recording) { recorderRef.current?.stop(); return }
     try {
@@ -75,15 +76,11 @@ export function App() {
         setRecording(false)
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' })
         setBusy(true)
-        try {
-          const text = await api.transcribe(blob)
-          setAnswer(prev => (prev ? prev + ' ' : '') + text)
-        } catch (e) { setError(String(e)) } finally { setBusy(false) }
+        try { const text = await api.transcribe(blob); setAnswer(p => (p ? p + ' ' : '') + text) }
+        catch (e) { setError(String(e)) } finally { setBusy(false) }
       }
-      mr.start()
-      recorderRef.current = mr
-      setRecording(true)
-    } catch (e) { setError('Microphone access denied or unavailable: ' + String(e)) }
+      mr.start(); recorderRef.current = mr; setRecording(true)
+    } catch (e) { setError('Microphone unavailable: ' + String(e)) }
   }
 
   return (
@@ -91,13 +88,48 @@ export function App() {
       <header><h1>SeniorSharp</h1><span className="tag">AI Senior .NET interview</span></header>
 
       {phase === 'start' && (
-        <div className="card">
-          <p>An AI interviewer assesses your Senior .NET level across four axes, then gives an explained verdict.</p>
-          <label>Your name (optional)<input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Dev" /></label>
-          <label>Invite code<input value={code} onChange={e => setCode(e.target.value)} placeholder="if required" /></label>
-          <label className="row"><input type="checkbox" checked={speak} onChange={e => setSpeak(e.target.checked)} /> Read questions aloud (voice)</label>
-          <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Start interview'}</button>
-        </div>
+        <>
+          <section className="hero">
+            <p>An AI interviewer assesses whether you interview at a <strong>Senior .NET</strong> level. It runs
+            an adaptive, multi-round interview and produces an explained, cited verdict across four axes — by
+            text or by voice, in your language.</p>
+          </section>
+
+          <section className="card">
+            <h2>How it works</h2>
+            <div className="flow">
+              {FLOW.map((s, i) => (
+                <div key={s} className="flow-row">
+                  <div className={`step s${i}`}>{s}</div>
+                  {i < FLOW.length - 1 && <div className="arrow">→</div>}
+                </div>
+              ))}
+            </div>
+            <p className="muted">
+              A <b>questioner</b> picks the next topic from a skill graph grounded on public catalogs
+              (roadmap.sh, Microsoft Learn); a <b>classifier</b> grades each answer; a <b>scorer</b> runs
+              several times over the full transcript and aggregates a verdict (with a spread as a confidence
+              signal). The seniority bar lives in versioned content, so verdicts are reproducible.
+            </p>
+            <div className="axes">
+              {AXES.map(([t, d]) => (
+                <div key={t} className="axis"><strong>{t}</strong><span>{d}</span></div>
+              ))}
+            </div>
+          </section>
+
+          <section className="card">
+            <h2>Start an interview</h2>
+            <label>Your name (optional)<input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Dev" /></label>
+            <label>Language
+              <select value={language} onChange={e => setLanguage(e.target.value)}>
+                {LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+              </select>
+            </label>
+            <label className="row"><input type="checkbox" checked={speak} onChange={e => setSpeak(e.target.checked)} /> Read questions aloud (voice)</label>
+            <button onClick={start} disabled={busy}>{busy ? 'Starting…' : 'Start interview'}</button>
+          </section>
+        </>
       )}
 
       {phase === 'interview' && (
@@ -115,12 +147,7 @@ export function App() {
             {busy && <div className="msg interviewer"><div className="who">Interviewer</div><div className="text">…</div></div>}
           </div>
           <div className="composer">
-            <button
-              className={`mic${recording ? ' rec' : ''}`}
-              onClick={toggleRecord}
-              disabled={busy && !recording}
-              title="Speak your answer"
-            >{recording ? '⏺ Stop' : '🎤 Speak'}</button>
+            <button className={`mic${recording ? ' rec' : ''}`} onClick={toggleRecord} disabled={busy && !recording} title="Speak your answer">{recording ? '⏺ Stop' : '🎤 Speak'}</button>
             <textarea
               value={answer}
               onChange={e => setAnswer(e.target.value)}
@@ -147,14 +174,12 @@ export function App() {
             </tbody>
           </table>
           <details>
-            <summary>Per-axis rationale & citations</summary>
+            <summary>Per-axis rationale &amp; citations</summary>
             {verdict.axes.map(a => (
               <div key={a.axis} className="axis-detail">
                 <strong>{a.axis}</strong>
                 <p>{a.rationale}</p>
-                {a.citations.length > 0 && (
-                  <ul>{a.citations.map((c, i) => <li key={i}>{c}</li>)}</ul>
-                )}
+                {a.citations.length > 0 && <ul>{a.citations.map((c, i) => <li key={i}>{c}</li>)}</ul>}
               </div>
             ))}
           </details>

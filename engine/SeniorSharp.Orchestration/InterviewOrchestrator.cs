@@ -73,6 +73,7 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
             GraphVersion = graphVersion,
             PromptVersion = "v1",
             ModelId = _llmOptions.Model,
+            Language = request.Language ?? string.Empty,
         };
 
         var round = new Round
@@ -86,7 +87,7 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
         session.Rounds.Add(round);
         _db.Sessions.Add(session);
 
-        var question = await AskDiscoveryQuestionAsync(round, ct);
+        var question = await AskDiscoveryQuestionAsync(round, Languages.NameOf(session.Language), ct);
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Started session {SessionId} at Discovery.", session.Id);
@@ -120,7 +121,7 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
         }
 
         var nextQuestion = round.Type == RoundType.Discovery
-            ? await AskDiscoveryQuestionAsync(round, ct)
+            ? await AskDiscoveryQuestionAsync(round, Languages.NameOf(session.Language), ct)
             : await AskGraphQuestionAsync(session, round, ct);
 
         await _db.SaveChangesAsync(ct);
@@ -152,7 +153,7 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
             session.Rounds.Add(round);
 
             var question = roundType == RoundType.Discovery
-                ? await AskDiscoveryQuestionAsync(round, ct)
+                ? await AskDiscoveryQuestionAsync(round, Languages.NameOf(session.Language), ct)
                 : await AskGraphQuestionAsync(session, round, ct);
 
             await _db.SaveChangesAsync(ct);
@@ -178,10 +179,12 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
 
     // --- round questioning ----------------------------------------------
 
-    private async Task<string> AskDiscoveryQuestionAsync(Round round, CancellationToken ct)
+    private async Task<string> AskDiscoveryQuestionAsync(Round round, string language, CancellationToken ct)
     {
         var system = _prompts.GetSystemPrompt("discovery", "v1");
         var messages = new List<ChatMessage> { new(ChatRole.System, system) };
+        if (!string.IsNullOrEmpty(language) && language != "English")
+            messages.Add(new ChatMessage(ChatRole.System, $"Ask the question in {language}."));
 
         // Replay the round so far so the LLM builds on prior answers.
         foreach (var t in round.Turns.OrderBy(t => t.CreatedAt))
@@ -206,7 +209,8 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
                 MasteryStateJson: BuildMasteryJson(session.Mastery),
                 SubgraphJson: subgraph,
                 AskedNodeIds: askedIds,
-                BudgetLeft: BudgetFor(round.Type) - asked),
+                BudgetLeft: BudgetFor(round.Type) - asked,
+                Language: Languages.NameOf(session.Language)),
             ct);
 
         AppendTurn(round, TurnRole.Interviewer, response.QuestionText);
@@ -226,7 +230,8 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
                 NodeJson: node is null ? $"{{\"id\":\"{skillId}\"}}" : JsonSerializer.Serialize(ToNodeView(node), Json),
                 Question: question,
                 CandidateAnswer: answer,
-                MasteryStateJson: BuildMasteryJson(session.Mastery)),
+                MasteryStateJson: BuildMasteryJson(session.Mastery),
+                Language: Languages.NameOf(session.Language)),
             ct);
 
         var mastery = session.Mastery.FirstOrDefault(m => m.SkillId == skillId);
@@ -253,7 +258,8 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
 
         for (var i = 0; i < _interview.ScorerRuns; i++)
         {
-            var verdict = await _scorer.ScoreAsync(new ScorerRequest(transcript, criteria, Axes), ct);
+            var verdict = await _scorer.ScoreAsync(
+                new ScorerRequest(transcript, criteria, Axes, Languages.NameOf(session.Language)), ct);
             runs.Add(verdict);
 
             foreach (var axis in verdict.Axes)

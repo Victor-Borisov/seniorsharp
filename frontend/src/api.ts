@@ -41,8 +41,8 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 }
 
 export const api = {
-  start: (candidateRef: string | null) =>
-    post<TurnResponse>('/voice/sessions', { candidateRef }),
+  start: (candidateRef: string | null, language: string) =>
+    post<TurnResponse>('/voice/sessions', { candidateRef, language }),
 
   turn: (sessionId: string, utterance: string) =>
     post<TurnResponse>(`/voice/sessions/${sessionId}/turn`, { utterance }),

@@ -26,7 +26,7 @@ public interface IInterviewOrchestrator
 }
 
 /// <summary>Input for <see cref="IInterviewOrchestrator.StartAsync"/>.</summary>
-public sealed record StartInterviewRequest(string? CandidateRef, string? GraphVersion = null);
+public sealed record StartInterviewRequest(string? CandidateRef, string? GraphVersion = null, string? Language = null);
 
 /// <summary>Result of starting an interview.</summary>
 public sealed record StartInterviewResult(

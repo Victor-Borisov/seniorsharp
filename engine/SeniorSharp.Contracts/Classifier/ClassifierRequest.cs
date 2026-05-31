@@ -8,8 +8,10 @@ namespace SeniorSharp.Contracts;
 /// <param name="Question">The question that was asked.</param>
 /// <param name="CandidateAnswer">The candidate's answer to classify.</param>
 /// <param name="MasteryStateJson">Serialized current mastery state for context.</param>
+/// <param name="Language">Human-readable language for the evidence/output (empty = English).</param>
 public sealed record ClassifierRequest(
     string NodeJson,
     string Question,
     string CandidateAnswer,
-    string MasteryStateJson);
+    string MasteryStateJson,
+    string Language = "");

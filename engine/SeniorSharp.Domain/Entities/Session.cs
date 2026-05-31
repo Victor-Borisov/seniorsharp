@@ -22,6 +22,9 @@ public class Session
 
     public string ModelId { get; set; } = string.Empty;
 
+    /// <summary>Locale code the interview is conducted in (e.g. "en", "ru"); empty = English.</summary>
+    public string Language { get; set; } = string.Empty;
+
     public List<Round> Rounds { get; set; } = [];
 
     public List<SkillMastery> Mastery { get; set; } = [];

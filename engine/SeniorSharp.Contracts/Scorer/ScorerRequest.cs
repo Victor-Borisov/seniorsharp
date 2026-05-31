@@ -7,7 +7,9 @@ namespace SeniorSharp.Contracts;
 /// <param name="TranscriptJson">Serialized full interview transcript.</param>
 /// <param name="CriteriaJson">Serialized rubric/criteria to score against.</param>
 /// <param name="Axes">Mastery axes to produce scores for.</param>
+/// <param name="Language">Human-readable language for the rationale/summary (empty = English).</param>
 public sealed record ScorerRequest(
     string TranscriptJson,
     string CriteriaJson,
-    string[] Axes);
+    string[] Axes,
+    string Language = "");
