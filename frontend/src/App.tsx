@@ -28,7 +28,6 @@ const AXES: [string, string][] = [
 
 export function App() {
   const [phase, setPhase] = useState<Phase>('start')
-  const [name, setName] = useState('')
   const [language, setLanguage] = useState('en')
   const [sessionId, setSessionId] = useState('')
   const [messages, setMessages] = useState<Msg[]>([])
@@ -81,7 +80,7 @@ export function App() {
     if (speak && audioRef.current) { audioRef.current.src = SILENCE; audioRef.current.play().catch(() => {}) }
     setBusy(true); setError(''); setTurnError(''); setFinished(false); setMessages([]); setVerdict(null)
     try {
-      const r = await api.start(name.trim() || null, language)
+      const r = await api.start(null, language)
       setSessionId(r.sessionId)
       setMessages([{ role: 'interviewer', text: r.utterance }])
       setPendingQuestion(r.utterance)
@@ -178,7 +177,6 @@ export function App() {
 
           <section className="card">
             <h2>Start an interview</h2>
-            <label>Your name (optional)<input value={name} onChange={e => setName(e.target.value)} placeholder="Jane Dev" /></label>
             <label>Language
               <select value={language} onChange={e => setLanguage(e.target.value)}>
                 {LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
