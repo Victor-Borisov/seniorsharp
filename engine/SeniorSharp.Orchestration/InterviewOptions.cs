@@ -19,8 +19,12 @@ public sealed class InterviewOptions
     /// <summary>The graph layer used as the system-design subgraph (and excluded from deep-dive).</summary>
     public string SystemDesignLayer { get; set; } = "Architecture & system design";
 
-    /// <summary>Number of independent scorer runs to ensemble for the verdict (spread analysis).</summary>
-    public int ScorerRuns { get; set; } = 3;
+    /// <summary>
+    /// Number of independent scorer runs to ensemble for the verdict (spread analysis). Two runs is the
+    /// minimum that still yields a spread (stddev) signal; the scorer is the most expensive call (full
+    /// transcript in + a long structured verdict out, ×N), so keep this as low as the confidence signal allows.
+    /// </summary>
+    public int ScorerRuns { get; set; } = 2;
 
     /// <summary>
     /// Model used by the simulated candidate for sub-senior levels (junior/middle). A weaker/cheaper model

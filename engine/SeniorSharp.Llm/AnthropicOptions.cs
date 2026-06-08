@@ -12,10 +12,12 @@ public sealed class AnthropicOptions
     public string ApiKey { get; set; } = string.Empty;
 
     /// <summary>
-    /// Model identifier. Current most-capable Anthropic model.
-    /// TODO: keep in sync with the latest Claude Opus id; as of this writing the current id is "claude-opus-4-8".
+    /// Model identifier used for all roles unless overridden. Default is Sonnet: a deliberate cost choice for
+    /// the public demo (~5x cheaper than Opus at comparable screening quality). Production also pins Sonnet via
+    /// the Anthropic__Model environment variable, so this default keeps repo == prod and avoids an accidental
+    /// Opus run from a fresh clone. Switch to "claude-opus-4-8" only when verdict quality demands it.
     /// </summary>
-    public string Model { get; set; } = "claude-opus-4-8";
+    public string Model { get; set; } = "claude-sonnet-4-6";
 
     /// <summary>Maximum output tokens per completion. Streaming is recommended above ~16000.</summary>
     public int MaxTokens { get; set; } = 16000;

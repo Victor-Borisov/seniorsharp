@@ -111,7 +111,8 @@ public static class PromptSchemas
                   "citations": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Transcript citations supporting the score."
+                    "maxItems": 2,
+                    "description": "At most 2 short verbatim transcript fragments supporting the score."
                   }
                 }
               }

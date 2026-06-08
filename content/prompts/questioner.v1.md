@@ -10,7 +10,7 @@ reduces uncertainty about whether this candidate is Senior.
 ## inputs (provided by the engine as separate messages)
 
 - The **skill subgraph** — probeable nodes: `id`, `title`, `layer`, `axes`, `prerequisites`,
-  `seniorSignal` (what separates a senior answer from a middle one here), `exampleProbe`.
+  `seniorSignal` (what separates a senior answer from a middle one here).
 - The **current mastery state** — per-skill recognition / application / depth gathered so far.
 - The **already-asked node ids** — never probe these again.
 - The **remaining question budget**.

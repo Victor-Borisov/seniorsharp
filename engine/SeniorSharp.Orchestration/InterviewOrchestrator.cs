@@ -353,10 +353,14 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
             ? query.Where(n => n.Layer == _interview.SystemDesignLayer)
             : query.Where(n => n.Layer != _interview.SystemDesignLayer);
 
-        var nodes = await query.ToListAsync(ct);
-        return JsonSerializer.Serialize(nodes.Select(ToNodeView), Json);
+        // Deterministic order so the serialized subgraph is byte-identical across the round's questioner
+        // calls. Without an explicit OrderBy the DB row order is not guaranteed; if it shifts between calls
+        // the cached system prefix changes and prompt caching silently misses (full price every call).
+        var nodes = await query.OrderBy(n => n.Id).ToListAsync(ct);
+        return JsonSerializer.Serialize(nodes.Select(ToQuestionerNodeView), Json);
     }
 
+    /// <summary>Full node view — includes <c>exampleProbe</c>. Used by the classifier (single probed node).</summary>
     private static object ToNodeView(SkillNode n) => new
     {
         id = n.Id,
@@ -366,6 +370,22 @@ public sealed class InterviewOrchestrator : IInterviewOrchestrator
         prerequisites = n.Prerequisites,
         seniorSignal = n.SeniorSignal,
         exampleProbe = n.ExampleProbe,
+    };
+
+    /// <summary>
+    /// Lean node view for the questioner subgraph: everything needed to choose and phrase a probe, but
+    /// WITHOUT <c>exampleProbe</c>. The questioner is instructed to invent its own mechanism question and
+    /// never recite the probe, so shipping the probe for every node of the layer on every questioner call
+    /// was dead weight (one of the two longest fields × the whole layer × every call).
+    /// </summary>
+    private static object ToQuestionerNodeView(SkillNode n) => new
+    {
+        id = n.Id,
+        title = n.Title,
+        layer = n.Layer,
+        axes = n.Axes,
+        prerequisites = n.Prerequisites,
+        seniorSignal = n.SeniorSignal,
     };
 
     private static string BuildMasteryJson(IEnumerable<SkillMastery> mastery) =>

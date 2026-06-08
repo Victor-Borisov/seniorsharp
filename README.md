@@ -12,7 +12,10 @@ generated per session. Two artefacts define the bar:
 - **Skill graph** (`content/skill-graph.json`) - the topics worth probing. It is grounded on recognized
   public catalogs (the [roadmap.sh](https://roadmap.sh) C# and ASP.NET Core roadmaps and the Microsoft Learn
   .NET paths, cross-checked against the AZ-204 outline) and extended with senior-depth nodes the catalogs do
-  not cover. Each node records its catalog provenance.
+  not cover. Each node records its catalog provenance. Explore it interactively in the
+  [**skill graph explorer**](https://seniorsharp.net/skill-graph.html) - hover a node to trace its
+  prerequisites and what it unlocks, click for the senior signal and an example probe question, and filter by
+  evaluation axis.
 - **Criteria** (`content/criteria.md`) - per-axis level descriptors, including where the line between
   *senior* and *not senior* sits. They were calibrated by Claude (Opus-class) through an adversarial,
   anti-flattery review.
