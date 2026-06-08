@@ -41,6 +41,9 @@ button:disabled { opacity:.5; cursor:default; }
 .axis { border:1px solid var(--line); border-radius:10px; padding:12px; }
 .axis strong { display:block; margin-bottom:4px; }
 .axis span { color:var(--muted); font-size:13px; }
+.graph-link { display:inline-block; margin-top:16px; padding:9px 16px; background:var(--accent-weak);
+  color:var(--accent); font-weight:600; font-size:14px; text-decoration:none; border-radius:9px; }
+.graph-link:hover { filter:brightness(.97); }
 
 /* Chat */
 .chat .messages { display:flex; flex-direction:column; gap:14px; max-height:58vh; overflow:auto; padding-right:6px; }

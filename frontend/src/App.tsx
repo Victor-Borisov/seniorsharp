@@ -173,6 +173,9 @@ export function App() {
                 <div key={t} className="axis"><strong>{t}</strong><span>{d}</span></div>
               ))}
             </div>
+            <a className="graph-link" href="/skill-graph.html" target="_blank" rel="noopener">
+              Explore the interactive skill graph — 91 nodes, 4 axes →
+            </a>
           </section>
 
           <section className="card">
